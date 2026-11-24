@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0d2247" />
+    <meta name="description" content="Jogo 2D mobile-first de cobrança de pênaltis com os personagens do NMFC." />
+
+    <!-- PWA / Mobile Install Meta Tags -->
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+    <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="NMFC Pênaltis" />
+
+    <title>NMFC Pênaltis</title>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <!-- TELA INICIAL / SELEÇÃO DE PERSONAGEM -->
+      <section id="screen-select" class="screen screen-select active" aria-label="Seleção de Personagem">
+        <header class="select-header">
+          <div class="header-top-row">
+            <div class="badge-record" aria-live="polite">
+              <span class="record-icon">🏆</span>
+              <span class="record-label">RECORDE</span>
+              <strong id="select-highscore">0</strong>
+            </div>
+            <button id="btn-sound-select" class="icon-btn" type="button" aria-label="Alternar som" title="Som">
+              🔊
+            </button>
+          </div>
+
+          <div class="brand-block">
+            <span class="brand-kicker">COBRANÇA DE PÊNALTIS</span>
+            <h1 class="brand-title">NMFC <span>PENALTIS</span></h1>
+            <p class="brand-subtitle">Escolha seu batedor e faça o máximo de gols seguidos</p>
+          </div>
+        </header>
+
+        <main class="character-grid-wrap">
+          <div id="character-grid" class="character-grid" role="radiogroup" aria-label="Personagens disponíveis">
+            <!-- Preenchido dinamicamente a partir de gamenmfc/personagens -->
+          </div>
+        </main>
+
+        <footer class="select-footer">
+          <button id="btn-start-game" class="btn-primary" type="button" disabled>
+            SELECIONE UM BATEDOR
+          </button>
+        </footer>
+      </section>
+
+      <!-- TELA DE GAMEPLAY -->
+      <section id="screen-game" class="screen screen-game" aria-label="Partida de Pênaltis">
+        <div class="game-hud">
+          <button id="btn-back" class="hud-btn" type="button" aria-label="Voltar para seleção">
+            ←
+          </button>
+
+          <div class="scoreboard" aria-live="polite">
+            <div class="score-item">
+              <span class="score-label">GOLS</span>
+              <strong id="hud-score" class="score-value">0</strong>
+            </div>
+            <div class="score-divider"></div>
+            <div class="score-item">
+              <span class="score-label">RECORDE</span>
+              <strong id="hud-highscore" class="score-value score-gold">0</strong>
+            </div>
+          </div>
+
+          <button id="btn-sound-game" class="hud-btn" type="button" aria-label="Alternar som">
+            🔊
+          </button>
+        </div>
+
+        <div class="hud-player-pill">
+          <canvas id="hud-avatar-canvas" width="44" height="44" aria-hidden="true"></canvas>
+          <div class="hud-player-meta">
+            <span class="hud-player-role">BATEDOR</span>
+            <strong id="hud-player-name">—</strong>
+          </div>
+        </div>
+
+        <canvas id="game-canvas" class="game-canvas"></canvas>
+
+        <div id="controls-hint" class="controls-hint">
+          <span>👆 Toque num alvo no gol ou deslize para chutar</span>
+        </div>
+
+        <!-- OVERLAY DE FIM DE JOGO (DEFESA) -->
+        <div id="overlay-gameover" class="gameover-overlay" hidden>
+          <div class="gameover-card">
+            <div class="gameover-badge">DEFESA DO GOLEIRO!</div>
+            <h2 id="gameover-title" class="gameover-title">Fim de Sequência</h2>
+            <p id="gameover-subtitle" class="gameover-subtitle">O goleiro fechou o gol!</p>
+
+            <div class="gameover-stats">
+              <div class="stat-box">
+                <span class="stat-label">GOLS SEGUIDOS</span>
+                <strong id="gameover-score" class="stat-number">0</strong>
+              </div>
+              <div class="stat-box stat-box-gold">
+                <span class="stat-label">RECORDE</span>
+                <strong id="gameover-highscore" class="stat-number">0</strong>
+              </div>
+            </div>
+
+            <div id="gameover-new-record" class="new-record-pill" hidden>
+              ⭐ NOVO RECORDE PESSOAL!
+            </div>
+
+            <div class="gameover-actions">
+              <button id="btn-retry" class="btn-primary" type="button">
+                BATER NOVAMENTE
+              </button>
+              <button id="btn-change-player" class="btn-secondary" type="button">
+                TROCAR PERSONAGEM
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "name": "NMFC Pênaltis",
+  "short_name": "NMFC Pênaltis",
+  "description": "Jogo 2D mobile-first de cobrança de pênaltis com os craques do NMFC.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#09152b",
+  "theme_color": "#0d2247",
+  "lang": "pt-BR",
+  "categories": ["games", "sports"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
