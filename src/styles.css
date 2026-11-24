@@ -130,6 +130,15 @@ body {
   font-weight: 900;
 }
 
+.record-holder {
+  color: #fde68a;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  padding-left: 5px;
+  border-left: 1px solid rgba(250, 204, 21, 0.35);
+}
+
 .icon-btn {
   width: 40px;
   height: 40px;
@@ -452,6 +461,19 @@ body {
   color: var(--nmfc-gold);
 }
 
+.score-holder {
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fde68a;
+  max-width: 78px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .score-value.bump {
   animation: scoreBump 0.32s ease;
 }
@@ -661,6 +683,13 @@ body {
 
 .stat-box-gold .stat-number {
   color: var(--nmfc-gold);
+}
+
+.stat-holder {
+  font-size: 11px;
+  font-weight: 800;
+  color: #fde68a;
+  letter-spacing: 0.04em;
 }
 
 .new-record-pill {

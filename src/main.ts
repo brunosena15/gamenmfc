@@ -7,13 +7,18 @@ import {
   getGoalkeeperSprites,
   type CharacterSprites,
 } from './spriteExtractor';
-import { getHighScore, saveHighScore } from './storage';
+import {
+  getHighScoreRecord,
+  saveHighScoreRecord,
+  type HighScoreRecord,
+} from './storage';
 
 const screenSelect = document.getElementById('screen-select') as HTMLElement;
 const screenGame = document.getElementById('screen-game') as HTMLElement;
 const characterGrid = document.getElementById('character-grid') as HTMLElement;
 
 const selectHighScoreEl = document.getElementById('select-highscore') as HTMLElement;
+const selectHighScoreHolderEl = document.getElementById('select-highscore-holder') as HTMLElement;
 const btnStartGame = document.getElementById('btn-start-game') as HTMLButtonElement;
 const btnSoundSelect = document.getElementById('btn-sound-select') as HTMLButtonElement;
 const btnSoundGame = document.getElementById('btn-sound-game') as HTMLButtonElement;
@@ -21,6 +26,7 @@ const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
 
 const hudScoreEl = document.getElementById('hud-score') as HTMLElement;
 const hudHighScoreEl = document.getElementById('hud-highscore') as HTMLElement;
+const hudHighScoreHolderEl = document.getElementById('hud-highscore-holder') as HTMLElement;
 const hudPlayerNameEl = document.getElementById('hud-player-name') as HTMLElement;
 const hudAvatarCanvas = document.getElementById('hud-avatar-canvas') as HTMLCanvasElement;
 const controlsHint = document.getElementById('controls-hint') as HTMLElement;
@@ -31,6 +37,7 @@ const gameOverTitle = document.getElementById('gameover-title') as HTMLElement;
 const gameOverSubtitle = document.getElementById('gameover-subtitle') as HTMLElement;
 const gameOverScore = document.getElementById('gameover-score') as HTMLElement;
 const gameOverHighScore = document.getElementById('gameover-highscore') as HTMLElement;
+const gameOverHighScoreHolder = document.getElementById('gameover-highscore-holder') as HTMLElement;
 const gameOverNewRecord = document.getElementById('gameover-new-record') as HTMLElement;
 const btnRetry = document.getElementById('btn-retry') as HTMLButtonElement;
 const btnChangePlayer = document.getElementById('btn-change-player') as HTMLButtonElement;
@@ -43,7 +50,7 @@ const SAVE_MESSAGES = [
 ];
 
 let selectedCharacter: CharacterDef | null = null;
-let highScore = getHighScore();
+let highScoreRecord: HighScoreRecord = getHighScoreRecord();
 const loadedSprites = new Map<string, CharacterSprites>();
 
 const game = new PenaltyGame(gameCanvas, {
@@ -51,14 +58,14 @@ const game = new PenaltyGame(gameCanvas, {
     hudScoreEl.textContent = String(score);
     triggerScoreBump(hudScoreEl);
 
-    if (isNewRecord || score > highScore) {
-      highScore = saveHighScore(score);
+    if (isNewRecord || score > highScoreRecord.score) {
+      highScoreRecord = saveHighScoreRecord(score, selectedCharacter?.name ?? '');
       syncHighScoreUI();
       triggerScoreBump(hudHighScoreEl);
     }
   },
   onGameOver: (finalScore, isNewRecord) => {
-    highScore = saveHighScore(finalScore);
+    highScoreRecord = saveHighScoreRecord(finalScore, selectedCharacter?.name ?? '');
     syncHighScoreUI();
     showGameOver(finalScore, isNewRecord);
   },
@@ -74,9 +81,22 @@ function triggerScoreBump(el: HTMLElement): void {
 }
 
 function syncHighScoreUI(): void {
-  const val = String(highScore);
+  const val = String(highScoreRecord.score);
+  const holder = highScoreRecord.score > 0 ? highScoreRecord.playerName : null;
+
   selectHighScoreEl.textContent = val;
   hudHighScoreEl.textContent = val;
+
+  if (holder) {
+    selectHighScoreHolderEl.textContent = holder;
+    selectHighScoreHolderEl.hidden = false;
+
+    hudHighScoreHolderEl.textContent = holder;
+    hudHighScoreHolderEl.hidden = false;
+  } else {
+    selectHighScoreHolderEl.hidden = true;
+    hudHighScoreHolderEl.hidden = true;
+  }
 }
 
 function syncSoundButtons(): void {
@@ -194,7 +214,7 @@ function startGame(): void {
   // Garante início após layout visível
   requestAnimationFrame(() => {
     if (!selectedCharacter) return;
-    game.startSession(selectedCharacter, sprites, highScore);
+    game.startSession(selectedCharacter, sprites, highScoreRecord.score);
   });
 }
 
@@ -218,7 +238,13 @@ function showGameOver(finalScore: number, isNewRecord: boolean): void {
   const msg = SAVE_MESSAGES[Math.floor(Math.random() * SAVE_MESSAGES.length)];
   gameOverSubtitle.textContent = msg;
   gameOverScore.textContent = String(finalScore);
-  gameOverHighScore.textContent = String(highScore);
+  gameOverHighScore.textContent = String(highScoreRecord.score);
+  if (highScoreRecord.score > 0 && highScoreRecord.playerName) {
+    gameOverHighScoreHolder.textContent = `com ${highScoreRecord.playerName}`;
+    gameOverHighScoreHolder.hidden = false;
+  } else {
+    gameOverHighScoreHolder.hidden = true;
+  }
   gameOverNewRecord.hidden = !(isNewRecord && finalScore > 0);
   overlayGameOver.hidden = false;
 }
