@@ -1,6 +1,8 @@
 const HIGH_SCORE_KEY = 'nmfc_penaltis_highscore';
 const HIGH_SCORE_HOLDER_KEY = 'nmfc_penaltis_highscore_holder';
 const SOUND_ENABLED_KEY = 'nmfc_penaltis_sound';
+const GOALS_BY_CHAR_KEY = 'nmfc_penaltis_goals_by_char';
+const UNLOCKED_CHARS_KEY = 'nmfc_penaltis_unlocked_chars';
 
 export interface HighScoreRecord {
   score: number;
@@ -43,6 +45,61 @@ export function saveHighScoreRecord(score: number, playerName: string): HighScor
   }
 
   return current;
+}
+
+export function getGoalsByCharacter(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(GOALS_BY_CHAR_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const clean: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        clean[k] = Math.floor(v);
+      }
+    }
+    return clean;
+  } catch {
+    return {};
+  }
+}
+
+export function incrementCharacterGoals(characterId: string): number {
+  const totals = getGoalsByCharacter();
+  const next = (totals[characterId] ?? 0) + 1;
+  totals[characterId] = next;
+  try {
+    window.localStorage.setItem(GOALS_BY_CHAR_KEY, JSON.stringify(totals));
+  } catch {
+    // noop
+  }
+  return next;
+}
+
+export function getUnlockedCharacterIds(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(UNLOCKED_CHARS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((item): item is string => typeof item === 'string'));
+    }
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function unlockCharacter(characterId: string): boolean {
+  const unlocked = getUnlockedCharacterIds();
+  if (unlocked.has(characterId)) return false;
+  unlocked.add(characterId);
+  try {
+    window.localStorage.setItem(UNLOCKED_CHARS_KEY, JSON.stringify(Array.from(unlocked)));
+  } catch {
+    // noop
+  }
+  return true;
 }
 
 export function getSoundEnabled(): boolean {

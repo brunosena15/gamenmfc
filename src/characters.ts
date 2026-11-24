@@ -1,3 +1,9 @@
+export interface UnlockRule {
+  requiredCharacterId: string;
+  requiredCharacterName: string;
+  requiredGoals: number;
+}
+
 export interface CharacterDef {
   id: string;
   fileName: string;
@@ -5,6 +11,8 @@ export interface CharacterDef {
   imageUrl: string;
   /** Som personalizado opcional ao marcar gol (ex: songs/songmau.m4a) */
   goalSoundUrl: string | null;
+  /** Regra opcional de personagem secreto desbloqueável */
+  unlockRule: UnlockRule | null;
   /** Mecânica oculta: se true, o goleiro da IA sempre lê e defende 100% dos chutes */
   alwaysSaved: boolean;
 }
@@ -34,6 +42,20 @@ for (const [path, url] of Object.entries(songModules)) {
 // Mapeamento opcional de acentuação para exibir o nome bem formatado
 const ACCENT_OVERRIDES: Record<string, string> = {
   bolivia: 'Bolívia',
+};
+
+// Regras de desbloqueio para personagens secretos
+const SECRET_UNLOCK_RULES: Record<string, UnlockRule> = {
+  pedro: {
+    requiredCharacterId: 'fezito',
+    requiredCharacterName: 'Fezito',
+    requiredGoals: 10,
+  },
+  robin: {
+    requiredCharacterId: 'mau',
+    requiredCharacterName: 'Mau',
+    requiredGoals: 10,
+  },
 };
 
 function formatCharacterName(stem: string): string {
@@ -69,11 +91,18 @@ export const CHARACTERS: CharacterDef[] = Object.entries(characterModules)
       name: formatCharacterName(stem),
       imageUrl,
       goalSoundUrl: GOAL_SOUNDS_BY_ID[id] ?? null,
+      unlockRule: SECRET_UNLOCK_RULES[id] ?? null,
       // Regra especial oculta: personagens/caus.jpg é sempre defendido pelo goleiro
       alwaysSaved: id === 'caus',
     });
     return list;
   }, [])
-  .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  .sort((a, b) => {
+    // Personagens normais primeiro, secretos no final do grid
+    const aSecret = a.unlockRule ? 1 : 0;
+    const bSecret = b.unlockRule ? 1 : 0;
+    if (aSecret !== bSecret) return aSecret - bSecret;
+    return a.name.localeCompare(b.name, 'pt-BR');
+  });
 
 export const GOALKEEPER_IMAGE_URL: string | null = goalkeeperImageUrl;

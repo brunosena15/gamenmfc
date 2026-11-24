@@ -96,6 +96,14 @@
           <span>👆 Toque num alvo no gol ou deslize para chutar</span>
         </div>
 
+        <div id="unlock-toast" class="unlock-toast" hidden>
+          <span class="unlock-toast-icon">🔓</span>
+          <div class="unlock-toast-body">
+            <span class="unlock-toast-kicker">PERSONAGEM SECRETO DESBLOQUEADO!</span>
+            <strong id="unlock-toast-name">Pedro</strong>
+          </div>
+        </div>
+
         <!-- OVERLAY DE FIM DE JOGO (DEFESA) -->
         <div id="overlay-gameover" class="gameover-overlay" hidden>
           <div class="gameover-card">
@@ -107,6 +115,7 @@
               <div class="stat-box">
                 <span class="stat-label">GOLS SEGUIDOS</span>
                 <strong id="gameover-score" class="stat-number">0</strong>
+                <span id="gameover-score-player" class="stat-holder-player"></span>
               </div>
               <div class="stat-box stat-box-gold">
                 <span class="stat-label">RECORDE</span>

@@ -8,8 +8,12 @@ import {
   type CharacterSprites,
 } from './spriteExtractor';
 import {
+  getGoalsByCharacter,
   getHighScoreRecord,
+  getUnlockedCharacterIds,
+  incrementCharacterGoals,
   saveHighScoreRecord,
+  unlockCharacter,
   type HighScoreRecord,
 } from './storage';
 
@@ -30,12 +34,15 @@ const hudHighScoreHolderEl = document.getElementById('hud-highscore-holder') as 
 const hudPlayerNameEl = document.getElementById('hud-player-name') as HTMLElement;
 const hudAvatarCanvas = document.getElementById('hud-avatar-canvas') as HTMLCanvasElement;
 const controlsHint = document.getElementById('controls-hint') as HTMLElement;
+const unlockToast = document.getElementById('unlock-toast') as HTMLElement;
+const unlockToastName = document.getElementById('unlock-toast-name') as HTMLElement;
 const gameCanvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 
 const overlayGameOver = document.getElementById('overlay-gameover') as HTMLElement;
 const gameOverTitle = document.getElementById('gameover-title') as HTMLElement;
 const gameOverSubtitle = document.getElementById('gameover-subtitle') as HTMLElement;
 const gameOverScore = document.getElementById('gameover-score') as HTMLElement;
+const gameOverScorePlayer = document.getElementById('gameover-score-player') as HTMLElement;
 const gameOverHighScore = document.getElementById('gameover-highscore') as HTMLElement;
 const gameOverHighScoreHolder = document.getElementById('gameover-highscore-holder') as HTMLElement;
 const gameOverNewRecord = document.getElementById('gameover-new-record') as HTMLElement;
@@ -51,12 +58,60 @@ const SAVE_MESSAGES = [
 
 let selectedCharacter: CharacterDef | null = null;
 let highScoreRecord: HighScoreRecord = getHighScoreRecord();
+let goalsByCharacter: Record<string, number> = getGoalsByCharacter();
+let unlockedCharacterIds: Set<string> = getUnlockedCharacterIds();
+let unlockToastTimer: number | null = null;
+
 const loadedSprites = new Map<string, CharacterSprites>();
+
+function isCharacterUnlocked(char: CharacterDef): boolean {
+  if (!char.unlockRule) return true;
+  if (unlockedCharacterIds.has(char.id)) return true;
+  const progress = goalsByCharacter[char.unlockRule.requiredCharacterId] ?? 0;
+  return progress >= char.unlockRule.requiredGoals;
+}
+
+function showUnlockToast(char: CharacterDef): void {
+  unlockToastName.textContent = char.name;
+  unlockToast.hidden = false;
+
+  if (unlockToastTimer !== null) {
+    window.clearTimeout(unlockToastTimer);
+  }
+  unlockToastTimer = window.setTimeout(() => {
+    unlockToast.hidden = true;
+    unlockToastTimer = null;
+  }, 3400);
+}
+
+function checkSecretUnlocks(scorerId: string): void {
+  const totalGoals = incrementCharacterGoals(scorerId);
+  goalsByCharacter[scorerId] = totalGoals;
+
+  for (const char of CHARACTERS) {
+    if (!char.unlockRule) continue;
+    if (char.unlockRule.requiredCharacterId !== scorerId) continue;
+    if (totalGoals >= char.unlockRule.requiredGoals) {
+      const newlyUnlocked = unlockCharacter(char.id);
+      unlockedCharacterIds.add(char.id);
+      if (newlyUnlocked) {
+        window.setTimeout(() => {
+          soundEngine.playUnlock();
+          showUnlockToast(char);
+        }, 380);
+      }
+    }
+  }
+}
 
 const game = new PenaltyGame(gameCanvas, {
   onScoreChange: (score, isNewRecord) => {
     hudScoreEl.textContent = String(score);
     triggerScoreBump(hudScoreEl);
+
+    if (selectedCharacter) {
+      checkSecretUnlocks(selectedCharacter.id);
+    }
 
     if (isNewRecord || score > highScoreRecord.score) {
       highScoreRecord = saveHighScoreRecord(score, selectedCharacter?.name ?? '');
@@ -113,71 +168,120 @@ function drawHudAvatar(sprites: CharacterSprites | null): void {
   ctx.drawImage(sprites.avatar, 0, 0, hudAvatarCanvas.width, hudAvatarCanvas.height);
 }
 
+function attachSpritePreview(spriteBox: HTMLElement, sprites: CharacterSprites): void {
+  const preview = document.createElement('canvas');
+  preview.className = 'char-sprite-canvas';
+  preview.width = sprites.front.width;
+  preview.height = sprites.front.height;
+  preview.getContext('2d')?.drawImage(sprites.front, 0, 0);
+
+  spriteBox.innerHTML = '';
+  spriteBox.appendChild(preview);
+}
+
 function renderCharacterCards(): void {
   characterGrid.innerHTML = '';
 
   CHARACTERS.forEach((char) => {
+    const unlocked = isCharacterUnlocked(char);
+    const isSelected = unlocked && selectedCharacter?.id === char.id;
+
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'char-card';
+    if (!unlocked) card.classList.add('locked');
+    if (isSelected) card.classList.add('selected');
     card.setAttribute('role', 'radio');
-    card.setAttribute('aria-checked', 'false');
+    card.setAttribute('aria-checked', String(isSelected));
+    card.setAttribute('aria-disabled', String(!unlocked));
     card.dataset.charId = char.id;
+
+    if (unlocked && char.unlockRule) {
+      const badge = document.createElement('span');
+      badge.className = 'char-secret-badge';
+      badge.textContent = 'SECRETO';
+      card.appendChild(badge);
+    }
 
     const spriteBox = document.createElement('div');
     spriteBox.className = 'char-sprite-box';
 
-    const loader = document.createElement('div');
-    loader.className = 'char-loading';
-    spriteBox.appendChild(loader);
+    const cached = loadedSprites.get(char.id);
+    if (cached) {
+      attachSpritePreview(spriteBox, cached);
+    } else {
+      const loader = document.createElement('div');
+      loader.className = 'char-loading';
+      spriteBox.appendChild(loader);
+    }
 
     const nameEl = document.createElement('span');
     nameEl.className = 'char-name';
-    nameEl.textContent = char.name;
+    nameEl.textContent = unlocked ? char.name : '???';
 
     card.appendChild(spriteBox);
     card.appendChild(nameEl);
 
+    if (!unlocked && char.unlockRule) {
+      const progress = Math.min(
+        char.unlockRule.requiredGoals,
+        goalsByCharacter[char.unlockRule.requiredCharacterId] ?? 0
+      );
+
+      const lockOverlay = document.createElement('div');
+      lockOverlay.className = 'char-lock-overlay';
+      lockOverlay.innerHTML = `
+        <span class="char-lock-icon">🔒</span>
+        <span class="char-lock-hint">Faça ${char.unlockRule.requiredGoals} gols com ${char.unlockRule.requiredCharacterName}</span>
+        <span class="char-lock-progress">${progress}/${char.unlockRule.requiredGoals}</span>
+      `;
+      card.appendChild(lockOverlay);
+    }
+
     card.addEventListener('click', () => {
       soundEngine.unlock();
+      if (!unlocked) {
+        soundEngine.playLocked();
+        card.classList.remove('shake');
+        void card.offsetWidth;
+        card.classList.add('shake');
+        return;
+      }
       soundEngine.playSelect();
       selectCharacter(char);
     });
 
     characterGrid.appendChild(card);
 
-    // Extrai sprite frontal e de costas em background
-    getCharacterSprites(char.imageUrl)
-      .then((sprites) => {
-        loadedSprites.set(char.id, sprites);
+    if (!cached) {
+      // Extrai sprite frontal e de costas em background
+      getCharacterSprites(char.imageUrl)
+        .then((sprites) => {
+          loadedSprites.set(char.id, sprites);
+          if (spriteBox.isConnected) {
+            attachSpritePreview(spriteBox, sprites);
+          }
 
-        const preview = document.createElement('canvas');
-        preview.className = 'char-sprite-canvas';
-        preview.width = sprites.front.width;
-        preview.height = sprites.front.height;
-        preview.getContext('2d')?.drawImage(sprites.front, 0, 0);
-
-        spriteBox.innerHTML = '';
-        spriteBox.appendChild(preview);
-
-        if (selectedCharacter?.id === char.id && screenGame.classList.contains('active')) {
-          game.updateSprites(sprites);
-          drawHudAvatar(sprites);
-        }
-      })
-      .catch(() => {
-        // Fallback para imagem direta se houver algum erro no processamento
-        const img = document.createElement('img');
-        img.src = char.imageUrl;
-        img.alt = char.name;
-        img.className = 'char-sprite-canvas';
-        spriteBox.innerHTML = '';
-        spriteBox.appendChild(img);
-      });
+          if (selectedCharacter?.id === char.id && screenGame.classList.contains('active')) {
+            game.updateSprites(sprites);
+            drawHudAvatar(sprites);
+          }
+        })
+        .catch(() => {
+          if (!spriteBox.isConnected) return;
+          const img = document.createElement('img');
+          img.src = char.imageUrl;
+          img.alt = unlocked ? char.name : 'Personagem secreto';
+          img.className = 'char-sprite-canvas';
+          spriteBox.innerHTML = '';
+          spriteBox.appendChild(img);
+        });
+    }
   });
 }
 
 function selectCharacter(char: CharacterDef): void {
+  if (!isCharacterUnlocked(char)) return;
   selectedCharacter = char;
 
   characterGrid.querySelectorAll<HTMLButtonElement>('.char-card').forEach((card) => {
@@ -199,6 +303,7 @@ function startGame(): void {
 
   soundEngine.unlock();
   overlayGameOver.hidden = true;
+  unlockToast.hidden = true;
   controlsHint.classList.remove('hidden');
 
   hudScoreEl.textContent = '0';
@@ -221,10 +326,12 @@ function startGame(): void {
 function showSelectScreen(): void {
   soundEngine.playSelect();
   overlayGameOver.hidden = true;
+  unlockToast.hidden = true;
   game.stop();
   screenGame.classList.remove('active');
   screenSelect.classList.add('active');
   syncHighScoreUI();
+  renderCharacterCards();
 }
 
 function showGameOver(finalScore: number, isNewRecord: boolean): void {
@@ -238,6 +345,7 @@ function showGameOver(finalScore: number, isNewRecord: boolean): void {
   const msg = SAVE_MESSAGES[Math.floor(Math.random() * SAVE_MESSAGES.length)];
   gameOverSubtitle.textContent = msg;
   gameOverScore.textContent = String(finalScore);
+  gameOverScorePlayer.textContent = selectedCharacter ? `com ${selectedCharacter.name}` : '';
   gameOverHighScore.textContent = String(highScoreRecord.score);
   if (highScoreRecord.score > 0 && highScoreRecord.playerName) {
     gameOverHighScoreHolder.textContent = `com ${highScoreRecord.playerName}`;
