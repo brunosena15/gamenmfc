@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nmfc-penaltis-v4';
+const CACHE_NAME = 'nmfc-penaltis-v5';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

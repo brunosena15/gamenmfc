@@ -3,6 +3,13 @@ import { soundEngine } from './audio';
 import { CHARACTERS, GOALKEEPER_IMAGE_URL, type CharacterDef } from './characters';
 import { PenaltyGame, type CopaSnapshot, type GameMode, type GameOverInfo } from './game';
 import {
+  isOnlineRankingConfigured,
+  submitGlobalScore,
+  subscribeGlobalRanking,
+  type OnlineRankingEntry,
+  type RealtimeStatus,
+} from './onlineRanking';
+import {
   getCharacterSprites,
   getGoalkeeperSprites,
   type CharacterSprites,
@@ -42,6 +49,9 @@ const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
 const btnRanking = document.getElementById('btn-ranking') as HTMLButtonElement;
 const overlayRanking = document.getElementById('overlay-ranking') as HTMLElement;
 const btnCloseRanking = document.getElementById('btn-close-ranking') as HTMLButtonElement;
+const rankingLiveBadge = document.getElementById('ranking-live-badge') as HTMLElement;
+const tabRankingGlobal = document.getElementById('tab-ranking-global') as HTMLButtonElement;
+const tabRankingLocal = document.getElementById('tab-ranking-local') as HTMLButtonElement;
 const inputNick = document.getElementById('input-nick') as HTMLInputElement;
 const rankingCopaWinsEl = document.getElementById('ranking-copa-wins') as HTMLElement;
 const rankingListEl = document.getElementById('ranking-list') as HTMLOListElement;
@@ -81,6 +91,7 @@ const gameOverScorePlayer = document.getElementById('gameover-score-player') as 
 const gameOverHighScore = document.getElementById('gameover-highscore') as HTMLElement;
 const gameOverHighScoreHolder = document.getElementById('gameover-highscore-holder') as HTMLElement;
 const gameOverNewRecord = document.getElementById('gameover-new-record') as HTMLElement;
+const gameOverOnlineStatus = document.getElementById('gameover-online-status') as HTMLElement;
 const btnShareWhatsapp = document.getElementById('btn-share-whatsapp') as HTMLButtonElement;
 const btnRetry = document.getElementById('btn-retry') as HTMLButtonElement;
 const btnChangePlayer = document.getElementById('btn-change-player') as HTMLButtonElement;
@@ -106,6 +117,11 @@ let goalsByCharacter: Record<string, number> = getGoalsByCharacter();
 let unlockedCharacterIds: Set<string> = getUnlockedCharacterIds();
 let unlockToastTimer: number | null = null;
 let lastShareText = '';
+let activeRankingTab: 'global' | 'local' = isOnlineRankingConfigured() ? 'global' : 'local';
+let globalRankingEntries: OnlineRankingEntry[] = [];
+let realtimeStatus: RealtimeStatus = isOnlineRankingConfigured() ? 'connecting' : 'unconfigured';
+let lastSubmittedOnlineId: number | null = null;
+let unsubscribeGlobalRanking: (() => void) | null = null;
 
 const loadedSprites = new Map<string, CharacterSprites>();
 let goalkeeperSpritesCache: CharacterSprites | null = null;
@@ -229,11 +245,18 @@ const game = new PenaltyGame(gameCanvas, {
     if (info.mode === 'infinite') {
       highScoreRecord = saveHighScoreRecord(info.finalScore, selectedCharacter?.name ?? '');
       if (info.finalScore > 0 && selectedCharacter) {
-        addLeaderboardEntry(getPlayerNick(), selectedCharacter.name, info.finalScore);
+        const nick = getPlayerNick();
+        addLeaderboardEntry(nick, selectedCharacter.name, info.finalScore);
+        void sendScoreToGlobalRanking(nick, selectedCharacter.name, info.finalScore);
+      } else {
+        gameOverOnlineStatus.hidden = true;
       }
       syncHighScoreUI();
-    } else if (info.reason === 'copa-win') {
-      incrementCopaWins();
+    } else {
+      gameOverOnlineStatus.hidden = true;
+      if (info.reason === 'copa-win') {
+        incrementCopaWins();
+      }
     }
     showGameOver(info);
   },
@@ -547,14 +570,117 @@ function showGameOver(info: GameOverInfo): void {
   overlayGameOver.hidden = false;
 }
 
+function syncRealtimeBadge(): void {
+  if (activeRankingTab !== 'global') {
+    rankingLiveBadge.hidden = true;
+    return;
+  }
+
+  rankingLiveBadge.hidden = false;
+  rankingLiveBadge.classList.remove('offline');
+  if (realtimeStatus === 'live') {
+    rankingLiveBadge.textContent = '🟢 AO VIVO';
+  } else if (realtimeStatus === 'connecting') {
+    rankingLiveBadge.textContent = '🟡 CONECTANDO...';
+  } else if (realtimeStatus === 'unconfigured') {
+    rankingLiveBadge.textContent = '⚙️ OFFLINE';
+    rankingLiveBadge.classList.add('offline');
+  } else {
+    rankingLiveBadge.textContent = '⚪ SEM CONEXÃO';
+    rankingLiveBadge.classList.add('offline');
+  }
+}
+
+async function sendScoreToGlobalRanking(
+  nick: string,
+  characterName: string,
+  score: number
+): Promise<void> {
+  if (!isOnlineRankingConfigured()) {
+    gameOverOnlineStatus.hidden = true;
+    return;
+  }
+
+  gameOverOnlineStatus.textContent = '🌍 Enviando para o Ranking Global...';
+  gameOverOnlineStatus.hidden = false;
+
+  try {
+    const saved = await submitGlobalScore(nick, characterName, score);
+    if (saved) {
+      lastSubmittedOnlineId = saved.id;
+      const rankIdx = globalRankingEntries.findIndex((e) => e.id === saved.id);
+      const posText = rankIdx >= 0 ? ` (#${rankIdx + 1} no Top 15!)` : '!';
+      gameOverOnlineStatus.textContent = `🌍 Salvo no Ranking Global${posText}`;
+    } else {
+      gameOverOnlineStatus.hidden = true;
+    }
+  } catch {
+    gameOverOnlineStatus.textContent = '📱 Salvo no Ranking Local (sem conexão online)';
+  }
+}
+
+function setRankingTab(tab: 'global' | 'local'): void {
+  activeRankingTab = tab;
+  tabRankingGlobal.classList.toggle('active', tab === 'global');
+  tabRankingGlobal.setAttribute('aria-selected', String(tab === 'global'));
+  tabRankingLocal.classList.toggle('active', tab === 'local');
+  tabRankingLocal.setAttribute('aria-selected', String(tab === 'local'));
+  renderRankingModal();
+}
+
 function renderRankingModal(): void {
   inputNick.value = getPlayerNick();
   rankingCopaWinsEl.textContent = String(getCopaWins());
+  syncRealtimeBadge();
 
-  const list = getLeaderboard();
   rankingListEl.innerHTML = '';
 
+  if (activeRankingTab === 'global') {
+    if (!isOnlineRankingConfigured()) {
+      rankingEmptyEl.textContent =
+        'Ranking Global pronto para conectar! Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Supabase/GitHub Secrets (use a aba Local enquanto isso).';
+      rankingEmptyEl.hidden = false;
+      return;
+    }
+
+    if (globalRankingEntries.length === 0) {
+      rankingEmptyEl.textContent =
+        realtimeStatus === 'connecting'
+          ? 'Carregando placar global em tempo real...'
+          : 'Nenhum placar global ainda. Seja o 1º a inaugurar o Ranking NMFC!';
+      rankingEmptyEl.hidden = false;
+      return;
+    }
+
+    rankingEmptyEl.hidden = true;
+    const medals = ['🥇', '🥈', '🥉'];
+    globalRankingEntries.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.className = 'ranking-item';
+      if (item.id === lastSubmittedOnlineId) li.classList.add('is-mine');
+      const pos = medals[idx] ?? `${idx + 1}º`;
+      li.innerHTML = `
+        <div class="ranking-item-left">
+          <span class="ranking-pos">${pos}</span>
+          <div class="ranking-meta">
+            <span class="ranking-nick"></span>
+            <span class="ranking-char"></span>
+          </div>
+        </div>
+        <strong class="ranking-score">${item.score} ⚽</strong>
+      `;
+      (li.querySelector('.ranking-nick') as HTMLElement).textContent = item.nick;
+      (li.querySelector('.ranking-char') as HTMLElement).textContent =
+        `com ${item.characterName}${item.date ? ` • ${item.date}` : ''}`;
+      rankingListEl.appendChild(li);
+    });
+    return;
+  }
+
+  const list = getLeaderboard();
   if (list.length === 0) {
+    rankingEmptyEl.textContent =
+      'Nenhuma sequência registrada neste aparelho ainda. Bata uns pênaltis para entrar no Top 10!';
     rankingEmptyEl.hidden = false;
     return;
   }
@@ -616,8 +742,18 @@ btnModeCopa.addEventListener('click', () => {
 btnRanking.addEventListener('click', () => {
   soundEngine.unlock();
   soundEngine.playSelect();
-  renderRankingModal();
+  setRankingTab(activeRankingTab);
   overlayRanking.hidden = false;
+});
+
+tabRankingGlobal.addEventListener('click', () => {
+  soundEngine.playSelect();
+  setRankingTab('global');
+});
+
+tabRankingLocal.addEventListener('click', () => {
+  soundEngine.playSelect();
+  setRankingTab('local');
 });
 
 btnCloseRanking.addEventListener('click', () => {
@@ -660,6 +796,32 @@ btnChangePlayer.addEventListener('click', showSelectScreen);
 syncHighScoreUI();
 syncSoundButtons();
 renderCharacterCards();
+
+if (isOnlineRankingConfigured()) {
+  unsubscribeGlobalRanking = subscribeGlobalRanking(
+    (entries) => {
+      globalRankingEntries = entries;
+      if (!overlayRanking.hidden && activeRankingTab === 'global') {
+        renderRankingModal();
+      }
+      if (lastSubmittedOnlineId !== null && !overlayGameOver.hidden) {
+        const idx = entries.findIndex((e) => e.id === lastSubmittedOnlineId);
+        if (idx >= 0) {
+          gameOverOnlineStatus.textContent = `🌍 Salvo no Ranking Global (#${idx + 1} no Top 15!)`;
+        }
+      }
+    },
+    (status) => {
+      realtimeStatus = status;
+      if (!overlayRanking.hidden) {
+        syncRealtimeBadge();
+      }
+    }
+  );
+  window.addEventListener('beforeunload', () => {
+    unsubscribeGlobalRanking?.();
+  });
+}
 
 if (GOALKEEPER_IMAGE_URL) {
   getGoalkeeperSprites(GOALKEEPER_IMAGE_URL)

@@ -67,13 +67,25 @@
           </button>
         </footer>
 
-        <!-- MODAL DE RANKING TOP 10 -->
+        <!-- MODAL DE RANKING GLOBAL (TEMPO REAL) & LOCAL -->
         <div id="overlay-ranking" class="gameover-overlay" hidden>
           <div class="gameover-card ranking-card">
             <div class="ranking-header">
-              <h2 class="ranking-title">🏅 Ranking NMFC</h2>
+              <div class="ranking-title-wrap">
+                <h2 class="ranking-title">🏅 Ranking NMFC</h2>
+                <span id="ranking-live-badge" class="live-badge" hidden>🟢 AO VIVO</span>
+              </div>
               <button id="btn-close-ranking" class="icon-btn icon-btn-sm" type="button" aria-label="Fechar ranking">
                 ✕
+              </button>
+            </div>
+
+            <div class="ranking-tabs" role="tablist" aria-label="Tipo de ranking">
+              <button id="tab-ranking-global" class="ranking-tab active" type="button" role="tab" aria-selected="true">
+                🌍 GLOBAL
+              </button>
+              <button id="tab-ranking-local" class="ranking-tab" type="button" role="tab" aria-selected="false">
+                📱 LOCAL
               </button>
             </div>
 
@@ -187,6 +199,8 @@
             <div id="gameover-new-record" class="new-record-pill" hidden>
               ⭐ NOVO RECORDE PESSOAL!
             </div>
+
+            <div id="gameover-online-status" class="online-status-pill" hidden></div>
 
             <div class="gameover-actions">
               <button id="btn-share-whatsapp" class="btn-whatsapp" type="button">
