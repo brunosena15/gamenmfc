@@ -33,7 +33,13 @@ function normalizeSupabaseUrl(raw: string): string {
   if (!/^https?:\/\//i.test(url)) {
     url = `https://${url}`;
   }
-  return url;
+
+  // Remove qualquer subcaminho extra (ex: /rest/v1, /rest/v1/nmfc_ranking), mantendo só o origin
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 const SUPABASE_URL = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL ?? '');
