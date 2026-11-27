@@ -114,6 +114,51 @@ body {
   gap: 6px;
 }
 
+.nick-chip {
+  height: 40px;
+  max-width: 112px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+  font-size: 11.5px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+
+.nick-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nick-chip:active {
+  transform: scale(0.95);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.nick-modal-card {
+  max-width: 330px;
+}
+
+.nick-modal-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.nick-modal-input {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  font-size: 15px;
+  text-align: center;
+}
+
 .icon-btn-sm {
   width: 34px;
   height: 34px;
@@ -699,6 +744,12 @@ body {
   background: rgba(14, 116, 144, 0.86);
   border: 1px solid #38bdf8;
   color: #e0f2fe;
+}
+
+.pill-shield-recharge {
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px dashed rgba(56, 189, 248, 0.65);
+  color: #7dd3fc;
 }
 
 .pill-paredao {

@@ -24,6 +24,7 @@ import {
   getLeaderboard,
   getPlayerNick,
   getUnlockedCharacterIds,
+  hasCustomPlayerNick,
   incrementCharacterGoals,
   incrementCopaWins,
   saveHighScoreRecord,
@@ -40,6 +41,12 @@ const characterGrid = document.getElementById('character-grid') as HTMLElement;
 
 const selectHighScoreEl = document.getElementById('select-highscore') as HTMLElement;
 const selectHighScoreHolderEl = document.getElementById('select-highscore-holder') as HTMLElement;
+const btnEditNick = document.getElementById('btn-edit-nick') as HTMLButtonElement;
+const selectPlayerNickEl = document.getElementById('select-player-nick') as HTMLElement;
+const overlayNick = document.getElementById('overlay-nick') as HTMLElement;
+const formNick = document.getElementById('form-nick') as HTMLFormElement;
+const inputNickModal = document.getElementById('input-nick-modal') as HTMLInputElement;
+const btnNickSkip = document.getElementById('btn-nick-skip') as HTMLButtonElement;
 const btnModeInfinite = document.getElementById('btn-mode-infinite') as HTMLButtonElement;
 const btnModeCopa = document.getElementById('btn-mode-copa') as HTMLButtonElement;
 const btnStartGame = document.getElementById('btn-start-game') as HTMLButtonElement;
@@ -76,6 +83,7 @@ const hudPlayerNameEl = document.getElementById('hud-player-name') as HTMLElemen
 const hudAvatarCanvas = document.getElementById('hud-avatar-canvas') as HTMLCanvasElement;
 const badgeOnFire = document.getElementById('badge-onfire') as HTMLElement;
 const badgeShield = document.getElementById('badge-shield') as HTMLElement;
+const badgeShieldProgress = document.getElementById('badge-shield-progress') as HTMLElement;
 const badgeParedao = document.getElementById('badge-paredao') as HTMLElement;
 const controlsHint = document.getElementById('controls-hint') as HTMLElement;
 const unlockToast = document.getElementById('unlock-toast') as HTMLElement;
@@ -125,6 +133,7 @@ let globalRankingEntries: OnlineRankingEntry[] = [];
 let realtimeStatus: RealtimeStatus = isOnlineRankingConfigured() ? 'connecting' : 'unconfigured';
 let lastSubmittedOnlineId: number | null = null;
 let globalRankingSub: GlobalRankingSubscription | null = null;
+let pendingStartAfterNick = false;
 
 const loadedSprites = new Map<string, CharacterSprites>();
 let goalkeeperSpritesCache: CharacterSprites | null = null;
@@ -228,6 +237,14 @@ const game = new PenaltyGame(gameCanvas, {
   onHudStatusChange: (status) => {
     badgeOnFire.hidden = !(status.mode === 'infinite' && status.onFire);
     badgeShield.hidden = !(status.mode === 'infinite' && status.hasShield);
+    const showRecharge =
+      status.mode === 'infinite' &&
+      status.shieldNeedsRecharge &&
+      status.shieldProgress > 0;
+    badgeShieldProgress.hidden = !showRecharge;
+    if (showRecharge) {
+      badgeShieldProgress.textContent = `🛡️ ${status.shieldProgress}/3`;
+    }
     badgeParedao.hidden = !(status.mode === 'infinite' && status.paredao);
 
     if (status.mode === 'copa' && status.copa) {
@@ -458,11 +475,44 @@ function setMode(mode: GameMode): void {
   updateStartButtonText();
 }
 
+function syncPlayerNickUI(): void {
+  const hasCustom = hasCustomPlayerNick();
+  const nick = getPlayerNick();
+  selectPlayerNickEl.textContent = hasCustom ? nick : 'Seu nome';
+  inputNick.value = nick;
+}
+
+function openNickModal(startAfterSave: boolean): void {
+  pendingStartAfterNick = startAfterSave;
+  inputNickModal.value = hasCustomPlayerNick() ? getPlayerNick() : '';
+  btnNickSkip.textContent = startAfterSave ? 'JOGAR COMO "JOGADOR"' : 'CANCELAR';
+  overlayNick.hidden = false;
+  window.setTimeout(() => {
+    inputNickModal.focus();
+    inputNickModal.select();
+  }, 40);
+}
+
 function startGame(): void {
+  if (!selectedCharacter) return;
+
+  // Se o jogador ainda não escolheu seu nome para o Ranking, pede antes da primeira partida
+  if (!hasCustomPlayerNick()) {
+    soundEngine.unlock();
+    soundEngine.playSelect();
+    openNickModal(true);
+    return;
+  }
+
+  launchGame();
+}
+
+function launchGame(): void {
   if (!selectedCharacter) return;
 
   soundEngine.unlock();
   overlayGameOver.hidden = true;
+  overlayNick.hidden = true;
   unlockToast.hidden = true;
   controlsHint.classList.remove('hidden');
 
@@ -803,6 +853,51 @@ overlayRanking.addEventListener('click', (e) => {
 
 inputNick.addEventListener('change', () => {
   inputNick.value = setPlayerNick(inputNick.value);
+  syncPlayerNickUI();
+});
+
+btnEditNick.addEventListener('click', () => {
+  soundEngine.unlock();
+  soundEngine.playSelect();
+  openNickModal(false);
+});
+
+formNick.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const typed = inputNickModal.value.trim();
+  if (!typed) {
+    inputNickModal.focus();
+    return;
+  }
+  soundEngine.playSelect();
+  setPlayerNick(typed);
+  syncPlayerNickUI();
+  overlayNick.hidden = true;
+  const shouldStart = pendingStartAfterNick;
+  pendingStartAfterNick = false;
+  if (shouldStart) {
+    launchGame();
+  }
+});
+
+btnNickSkip.addEventListener('click', () => {
+  soundEngine.playSelect();
+  const shouldStart = pendingStartAfterNick;
+  pendingStartAfterNick = false;
+  overlayNick.hidden = true;
+  if (shouldStart) {
+    if (!hasCustomPlayerNick()) {
+      setPlayerNick('Jogador');
+      syncPlayerNickUI();
+    }
+    launchGame();
+  }
+});
+
+overlayNick.addEventListener('click', (e) => {
+  if (e.target === overlayNick && !pendingStartAfterNick) {
+    overlayNick.hidden = true;
+  }
 });
 
 btnShareWhatsapp.addEventListener('click', () => {
@@ -828,6 +923,7 @@ btnChangePlayer.addEventListener('click', showSelectScreen);
 
 // Inicialização
 syncHighScoreUI();
+syncPlayerNickUI();
 syncSoundButtons();
 renderCharacterCards();
 

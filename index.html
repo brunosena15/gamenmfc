@@ -33,6 +33,9 @@
               <span id="select-highscore-holder" class="record-holder" hidden></span>
             </div>
             <div class="header-actions">
+              <button id="btn-edit-nick" class="nick-chip" type="button" aria-label="Alterar seu nome" title="Alterar nome">
+                👤 <span id="select-player-nick">Seu nome</span>
+              </button>
               <button id="btn-ranking" class="icon-btn" type="button" aria-label="Ver ranking" title="Ranking">
                 🏅
               </button>
@@ -66,6 +69,34 @@
             SELECIONE UM BATEDOR
           </button>
         </footer>
+
+        <!-- POPUP DE NOME DO JOGADOR ANTES DA PRIMEIRA PARTIDA -->
+        <div id="overlay-nick" class="gameover-overlay" hidden>
+          <form id="form-nick" class="gameover-card nick-modal-card">
+            <div class="nick-modal-icon">⚽</div>
+            <h2 class="gameover-title">Qual é o seu nome?</h2>
+            <p class="gameover-subtitle">
+              Ele vai aparecer no <strong>Ranking Global</strong> quando você marcar gols!
+            </p>
+            <input
+              id="input-nick-modal"
+              class="nick-input nick-modal-input"
+              type="text"
+              maxlength="18"
+              autocomplete="nickname"
+              placeholder="Ex: Bruno, Craque10..."
+              required
+            />
+            <div class="gameover-actions">
+              <button id="btn-nick-confirm" class="btn-primary" type="submit">
+                SALVAR E JOGAR
+              </button>
+              <button id="btn-nick-skip" class="btn-secondary" type="button">
+                JOGAR COMO "JOGADOR"
+              </button>
+            </div>
+          </form>
+        </div>
 
         <!-- MODAL DE RANKING GLOBAL (TEMPO REAL) & LOCAL -->
         <div id="overlay-ranking" class="gameover-overlay" hidden>
@@ -163,6 +194,7 @@
           <div class="hud-status-badges">
             <span id="badge-onfire" class="status-pill pill-fire" hidden>🔥 ON FIRE</span>
             <span id="badge-shield" class="status-pill pill-shield" hidden>🛡️ ESCUDO</span>
+            <span id="badge-shield-progress" class="status-pill pill-shield-recharge" hidden>🛡️ 0/3</span>
             <span id="badge-paredao" class="status-pill pill-paredao" hidden>🧱 PAREDÃO</span>
           </div>
         </div>

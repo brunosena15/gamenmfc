@@ -40,6 +40,8 @@ export interface CopaSnapshot {
 export interface HudStatus {
   streak: number;
   hasShield: boolean;
+  shieldProgress: number;
+  shieldNeedsRecharge: boolean;
   onFire: boolean;
   paredao: boolean;
   mode: GameMode;
@@ -170,6 +172,8 @@ export class PenaltyGame {
   private streak = 0;
   private shotsTaken = 0;
   private hasShield = false;
+  private hasLostFirstShield = false;
+  private bonusGoalsTowardNextShield = 0;
   private highScoreAtStart = 0;
   private achievedNewRecord = false;
   private hasKickedOnce = false;
@@ -312,6 +316,8 @@ export class PenaltyGame {
     this.streak = 0;
     this.shotsTaken = 0;
     this.hasShield = false;
+    this.hasLostFirstShield = false;
+    this.bonusGoalsTowardNextShield = 0;
     this.highScoreAtStart = currentHighScore;
     this.achievedNewRecord = false;
     this.hasKickedOnce = false;
@@ -417,6 +423,8 @@ export class PenaltyGame {
     this.callbacks.onHudStatusChange({
       streak: this.streak,
       hasShield: this.hasShield,
+      shieldProgress: this.bonusGoalsTowardNextShield,
+      shieldNeedsRecharge: this.hasLostFirstShield && !this.hasShield,
       onFire: this.isOnFire,
       paredao: this.isParedao,
       mode: this.mode,
@@ -742,6 +750,34 @@ export class PenaltyGame {
       return;
     }
 
+    const isBonusShot =
+      this.mode === 'infinite' &&
+      this.bonusTarget !== null &&
+      this.playerTarget === this.bonusTarget;
+
+    // DECISÃO DE RISCO NO ALVO BÔNUS:
+    // O goleiro SEMPRE vai naquela direção e o gol só é convertido com cobrança PERFEITA!
+    if (isBonusShot) {
+      this.keeperTarget = this.playerTarget;
+      if (this.shotQuality === 'perfect') {
+        this.isGoalShot = true;
+        return;
+      }
+      if (this.shotQuality === 'bad') {
+        this.postHitIn = false;
+        this.isGoalShot = false;
+        const m = this.metrics;
+        this.postImpactPoint = {
+          x: this.playerTarget.includes('left') ? m.goalLeft + 3 : m.goalRight - 3,
+          y: m.targets[this.playerTarget].y,
+        };
+        return;
+      }
+      // Zona verde (não perfeita) no alvo bônus = goleiro defende!
+      this.isGoalShot = false;
+      return;
+    }
+
     // Zona vermelha (errou feio o timing): bola vai na trave!
     if (this.shotQuality === 'bad') {
       this.keeperTarget = TARGET_IDS[Math.floor(Math.random() * TARGET_IDS.length)];
@@ -1046,7 +1082,10 @@ export class PenaltyGame {
           this.highScoreAtStart > 0 &&
           this.score === this.highScoreAtStart;
 
-        if (this.isCavadinha || isCausPerfect || this.shotQuality === 'bad' || isRecordShot) {
+        if (this.isCavadinha) {
+          // Cavadinha bem mais dramática em câmera lenta!
+          this.timeScale = 0.36;
+        } else if (isCausPerfect || this.shotQuality === 'bad' || isRecordShot) {
           this.timeScale = 0.62;
         } else {
           this.timeScale = 1;
@@ -1057,14 +1096,14 @@ export class PenaltyGame {
 
     // ===== FASE VOO DA BOLA (ATAQUE) =====
     if (this.phase === 'BALL_FLIGHT') {
-      const flightDuration = this.isCavadinha ? 0.58 : this.shotQuality === 'perfect' ? 0.38 : 0.44;
+      const flightDuration = this.isCavadinha ? 0.64 : this.shotQuality === 'perfect' ? 0.38 : 0.44;
       const t = clamp(this.phaseTimer / flightDuration, 0, 1);
       const destPt =
         this.shotQuality === 'bad' ? this.postImpactPoint : m.targets[this.playerTarget];
 
       const isTop = this.playerTarget === 'top-left' || this.playerTarget === 'top-right';
       const arcHeight = this.isCavadinha
-        ? m.h * 0.14
+        ? m.h * 0.165
         : isTop
           ? m.h * 0.08
           : m.h * 0.035;
@@ -1080,7 +1119,7 @@ export class PenaltyGame {
 
       this.ballPos = { x: bx, y: by };
       this.ballScale = lerp(1, 0.54, et);
-      this.ballRotation += dt * (this.isCavadinha ? 8 : 20);
+      this.ballRotation += dt * (this.isCavadinha ? 5 : 20);
       this.ballShadowPos = {
         x: bx,
         y: lerp(m.ballStart.y + m.ballRadius * 0.65, m.goalBottom + 2, et),
@@ -1290,10 +1329,25 @@ export class PenaltyGame {
       this.score += goalsAdded;
 
       let gainedShield = false;
+      let shieldRechargeNote = '';
+
+      // Regra do Escudo: máximo 1 escudo por vez; após perder o 1º, só ganha outro acertando 3 gols bônus!
       if (hitBonus && !this.hasShield) {
-        this.hasShield = true;
-        gainedShield = true;
-        soundEngine.playShieldGain();
+        if (!this.hasLostFirstShield) {
+          this.hasShield = true;
+          gainedShield = true;
+          soundEngine.playShieldGain();
+        } else {
+          this.bonusGoalsTowardNextShield += 1;
+          if (this.bonusGoalsTowardNextShield >= 3) {
+            this.hasShield = true;
+            this.bonusGoalsTowardNextShield = 0;
+            gainedShield = true;
+            soundEngine.playShieldGain();
+          } else {
+            shieldRechargeNote = `🛡️ Novo escudo: ${this.bonusGoalsTowardNextShield}/3 bônus`;
+          }
+        }
       }
 
       const justBeatRecord =
@@ -1321,7 +1375,11 @@ export class PenaltyGame {
       }
 
       if (gainedShield) {
-        this.bannerSubtext = '🛡️ +1 ESCUDO DE PROTEÇÃO!';
+        this.bannerSubtext = this.hasLostFirstShield
+          ? '🛡️ NOVO ESCUDO CONQUISTADO!'
+          : '🛡️ +1 ESCUDO DE PROTEÇÃO!';
+      } else if (shieldRechargeNote) {
+        this.bannerSubtext = shieldRechargeNote;
       } else if (firstTimeBeating) {
         this.bannerSubtext = '⭐ NOVO RECORDE!';
       } else if (this.mode === 'copa') {
@@ -1384,6 +1442,9 @@ export class PenaltyGame {
         this.shotQuality === 'perfect'
           ? 'Nem na gaveta passa hoje, Caus!'
           : 'O goleiro já sabia esse canto!';
+    } else if (this.mode === 'infinite' && this.bonusTarget === this.playerTarget) {
+      this.bannerText = 'DEFENDEU!';
+      this.bannerSubtext = 'No bônus só entra na zona dourada!';
     } else {
       this.bannerText = 'DEFENDEU!';
       this.bannerSubtext = 'O goleiro buscou no canto!';
@@ -1398,6 +1459,8 @@ export class PenaltyGame {
 
   private consumeShieldSave(impactPt: Point, subtitle: string): void {
     this.hasShield = false;
+    this.hasLostFirstShield = true;
+    this.bonusGoalsTowardNextShield = 0;
     this.phase = 'SHIELD_SAVED';
     this.phaseTimer = 0;
     this.screenShake = 8;
@@ -1641,12 +1704,20 @@ export class PenaltyGame {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Texto de instrução
-    ctx.fillStyle = '#fde68a';
-    ctx.font = '900 11px system-ui, sans-serif';
+    // Texto de instrução (destaca o risco quando mirando no Alvo Bônus!)
+    const isBonusAim =
+      this.mode === 'infinite' &&
+      this.bonusTarget !== null &&
+      this.playerTarget === this.bonusTarget;
+    ctx.fillStyle = isBonusAim ? '#facc15' : '#fde68a';
+    ctx.font = '900 10.5px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('⚡ TOQUE NA TELA PARA CHUTAR!', m.w * 0.5, by - 12);
+    ctx.fillText(
+      isBonusAim ? '★ BÔNUS! SÓ ENTRA NA ZONA DOURADA!' : '⚡ TOQUE NA TELA PARA CHUTAR!',
+      m.w * 0.5,
+      by - 12
+    );
 
     // Zonas da barra (Vermelho | Verde | Dourado | Verde | Vermelho)
     ctx.save();

@@ -112,6 +112,15 @@ export function unlockCharacter(characterId: string): boolean {
   return true;
 }
 
+export function hasCustomPlayerNick(): boolean {
+  try {
+    const raw = window.localStorage.getItem(PLAYER_NICK_KEY)?.trim();
+    return Boolean(raw && raw.length > 0);
+  } catch {
+    return false;
+  }
+}
+
 export function getPlayerNick(): string {
   try {
     return window.localStorage.getItem(PLAYER_NICK_KEY)?.trim() || 'Você';
