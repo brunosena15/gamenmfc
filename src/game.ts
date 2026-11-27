@@ -212,6 +212,7 @@ export class PenaltyGame {
   private pedroCarX = -120;
   private robinComicTimer = 0;
   private robinComicWord = 'POW!';
+  private totzinSpeechTimer = 0;
 
   // Bola
   private ballPos: Point = { x: 0, y: 0 };
@@ -333,6 +334,7 @@ export class PenaltyGame {
     this.crowdExcitement = 0;
     this.pedroCarActive = false;
     this.robinComicTimer = 0;
+    this.totzinSpeechTimer = 0;
 
     this.updateCanvasSize();
     this.resetRound(true);
@@ -795,8 +797,19 @@ export class PenaltyGame {
       return;
     }
 
-    // Zona Dourada (Perfeito — NA GAVETA!): indefensável mesmo se o goleiro adivinhar o canto!
+    // Zona Dourada (Perfeito — NA GAVETA!)
     if (this.shotQuality === 'perfect') {
+      if (this.playerTarget === 'center') {
+        // No meio (cavadinha ou batida normal): se o goleiro ficar no meio, ele PEGA mesmo na zona dourada!
+        const stayCenterChance = this.didParadinha ? 0.15 : this.isParedao ? 0.3 : 0.2;
+        this.keeperTarget =
+          Math.random() < stayCenterChance
+            ? 'center'
+            : this.chooseRandomOtherTarget('center');
+        this.isGoalShot = this.keeperTarget !== 'center';
+        return;
+      }
+
       const randomIdx = Math.floor(Math.random() * TARGET_IDS.length);
       this.keeperTarget = TARGET_IDS[randomIdx];
       // Se fez paradinha, goleiro pula pro outro lado!
@@ -967,6 +980,9 @@ export class PenaltyGame {
     }
     if (this.robinComicTimer > 0) {
       this.robinComicTimer = Math.max(0, this.robinComicTimer - rawDt);
+    }
+    if (this.totzinSpeechTimer > 0) {
+      this.totzinSpeechTimer = Math.max(0, this.totzinSpeechTimer - rawDt);
     }
 
     // Carro #95 do Pedro atravessando o campo comemorando
@@ -1324,6 +1340,7 @@ export class PenaltyGame {
       this.phaseTimer = 0;
       this.streak += 1;
 
+      const prevScore = this.score;
       const hitBonus = this.mode === 'infinite' && this.bonusTarget === this.playerTarget;
       const goalsAdded = hitBonus ? 2 : 1;
       this.score += goalsAdded;
@@ -1403,6 +1420,11 @@ export class PenaltyGame {
         const words = ['POW!', 'BAM!', 'ZAP!', 'GOLAÇO!'];
         this.robinComicWord = words[Math.floor(Math.random() * words.length)];
         this.robinComicTimer = 1.2;
+      } else if (
+        this.character.id === 'totzin' &&
+        Math.floor(this.score / 5) > Math.floor(prevScore / 5)
+      ) {
+        this.totzinSpeechTimer = 2.0;
       }
 
       soundEngine.playGoal(firstTimeBeating, this.character.goalSoundUrl);
@@ -1445,6 +1467,11 @@ export class PenaltyGame {
     } else if (this.mode === 'infinite' && this.bonusTarget === this.playerTarget) {
       this.bannerText = 'DEFENDEU!';
       this.bannerSubtext = 'No bônus só entra na zona dourada!';
+    } else if (this.playerTarget === 'center' && this.keeperTarget === 'center') {
+      this.bannerText = 'FICOU NO MEIO!';
+      this.bannerSubtext = this.isCavadinha
+        ? 'O goleiro pegou a cavadinha!'
+        : 'O goleiro nem saiu do lugar!';
     } else {
       this.bannerText = 'DEFENDEU!';
       this.bannerSubtext = 'O goleiro buscou no canto!';
@@ -1653,6 +1680,11 @@ export class PenaltyGame {
     // Balão HQ do Robin
     if (this.robinComicTimer > 0) {
       this.drawRobinComicBurst(ctx, m);
+    }
+
+    // Balão de fala do Totzin a cada 5 gols ("Faça o L !!")
+    if (this.totzinSpeechTimer > 0) {
+      this.drawTotzinSpeechBubble(ctx, m);
     }
 
     // Partículas
@@ -1937,6 +1969,63 @@ export class PenaltyGame {
     ctx.textBaseline = 'middle';
     ctx.strokeText(this.robinComicWord, 0, 2);
     ctx.fillText(this.robinComicWord, 0, 2);
+
+    ctx.restore();
+  }
+
+  private drawTotzinSpeechBubble(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const enter = clamp(
+      1 - (this.totzinSpeechTimer > 1.75 ? (this.totzinSpeechTimer - 1.75) / 0.25 : 0),
+      0.05,
+      1
+    );
+    const fadeOut = clamp(this.totzinSpeechTimer / 0.28, 0, 1);
+    const scale = easeOutBack(enter);
+
+    const bx = clamp(m.kickerKick.x + m.w * 0.13, 108, m.w - 108);
+    const by = m.kickerKick.y - m.kickerHeight * 1.05;
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+    ctx.translate(bx, by);
+    ctx.scale(scale, scale);
+
+    const w = 178;
+    const h = 48;
+
+    // Sombra suave do balão
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+    ctx.beginPath();
+    ctx.roundRect(-w * 0.5 + 3, -h * 0.5 + 4, w, h, 18);
+    ctx.fill();
+
+    // Corpo branco do balão + rabicho apontando pro Totzin
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(-w * 0.5, -h * 0.5, w, h, 18);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(-30, h * 0.5 - 2);
+    ctx.lineTo(-46, h * 0.5 + 15);
+    ctx.lineTo(-10, h * 0.5 - 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Limpa a linha interna da junção do rabicho
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(-31, h * 0.5 - 5, 22, 6);
+
+    // Texto em vermelho vibrante
+    ctx.fillStyle = '#dc2626';
+    ctx.font = '900 21px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Faça o L !!', 0, 1);
 
     ctx.restore();
   }
