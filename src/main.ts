@@ -3,6 +3,7 @@ import { soundEngine } from './audio';
 import { CHARACTERS, GOALKEEPER_IMAGE_URL, type CharacterDef } from './characters';
 import { PenaltyGame, type CopaSnapshot, type GameMode, type GameOverInfo } from './game';
 import {
+  getLastConnectionError,
   isOnlineRankingConfigured,
   submitGlobalScore,
   subscribeGlobalRanking,
@@ -649,11 +650,14 @@ function renderRankingModal(): void {
     }
 
     if (globalRankingEntries.length === 0) {
+      const errDetail = getLastConnectionError();
       rankingEmptyEl.textContent =
         realtimeStatus === 'connecting'
           ? 'Carregando placar global...'
           : realtimeStatus === 'offline'
-            ? 'Sem conexão com o servidor. Toque em ↻ para tentar novamente.'
+            ? errDetail
+              ? `Sem conexão: ${errDetail}`
+              : 'Sem conexão com o servidor. Toque em ↻ para tentar novamente.'
             : 'Nenhum placar global ainda. Seja o 1º a inaugurar o Ranking NMFC!';
       rankingEmptyEl.hidden = false;
       return;
@@ -836,7 +840,7 @@ if (isOnlineRankingConfigured()) {
     (status) => {
       realtimeStatus = status;
       if (!overlayRanking.hidden) {
-        syncRealtimeBadge();
+        renderRankingModal();
       }
     }
   );

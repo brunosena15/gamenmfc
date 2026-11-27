@@ -19,14 +19,59 @@ interface RankingRow {
   created_at: string;
 }
 
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL?.trim() ?? '').replace(/\/+$/, '');
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ?? '';
+function normalizeSupabaseUrl(raw: string): string {
+  let url = raw.trim().replace(/\/+$/, '');
+  if (!url) return '';
+
+  // Se o usuário colou a URL do dashboard (https://supabase.com/dashboard/project/<ref>/...),
+  // converte automaticamente para a Project API URL (https://<ref>.supabase.co)
+  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9-]+)/i);
+  if (dashMatch?.[1]) {
+    return `https://${dashMatch[1]}.supabase.co`;
+  }
+
+  if (!/^https?:\/\//i.test(url)) {
+    url = `https://${url}`;
+  }
+  return url;
+}
+
+const SUPABASE_URL = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL ?? '');
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
 const TABLE_NAME = 'nmfc_ranking';
 
 let client: SupabaseClient | null = null;
+let lastConnectionError: string | null = null;
+
+export function getLastConnectionError(): string | null {
+  return lastConnectionError;
+}
 
 export function isOnlineRankingConfigured(): boolean {
   return Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+}
+
+function formatErrorMessage(err: unknown): string {
+  if (!err) return 'Erro desconhecido';
+  if (typeof err === 'string') return err;
+  if (typeof err === 'object') {
+    const obj = err as { code?: string; message?: string; details?: string; hint?: string; status?: number };
+    const msg = obj.message || obj.details || '';
+    if (obj.code === '42P01' || obj.code === 'PGRST205') {
+      return 'Tabela nmfc_ranking não encontrada no Supabase (rode o supabase-setup.sql).';
+    }
+    if (obj.code === '42501') {
+      return 'Sem permissão RLS na tabela nmfc_ranking (rode o supabase-setup.sql).';
+    }
+    if (/invalid api key|jwt|secret api key/i.test(msg)) {
+      return `Chave inválida: use a chave pública "anon" ou "publishable" (${msg}).`;
+    }
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      return `Falha de rede ao acessar ${SUPABASE_URL || 'Supabase'} (${msg}).`;
+    }
+    return [obj.code, msg].filter(Boolean).join(': ') || 'Erro ao conectar no Supabase.';
+  }
+  return 'Erro ao conectar no Supabase.';
 }
 
 function getClient(): SupabaseClient | null {
@@ -75,10 +120,12 @@ export async function fetchGlobalRanking(limit = 15): Promise<OnlineRankingEntry
     .limit(limit);
 
   if (error || !data) {
+    lastConnectionError = formatErrorMessage(error);
     console.warn('[NMFC Ranking] Erro ao buscar ranking:', error);
-    throw error ?? new Error('Falha ao buscar ranking online.');
+    throw error ?? new Error(lastConnectionError);
   }
 
+  lastConnectionError = null;
   return (data as RankingRow[]).map(mapRow);
 }
 
@@ -105,10 +152,12 @@ export async function submitGlobalScore(
     .single();
 
   if (error || !data) {
+    lastConnectionError = formatErrorMessage(error);
     console.warn('[NMFC Ranking] Erro ao enviar placar:', error);
-    throw error ?? new Error('Falha ao enviar pontuação online.');
+    throw error ?? new Error(lastConnectionError);
   }
 
+  lastConnectionError = null;
   return mapRow(data as RankingRow);
 }
 
@@ -155,8 +204,9 @@ export function subscribeGlobalRanking(
       restHealthy = true;
       onUpdate(entries);
       emitStatus();
-    } catch {
+    } catch (err) {
       if (!active) return;
+      lastConnectionError = formatErrorMessage(err);
       restHealthy = false;
       emitStatus();
     }
@@ -183,13 +233,11 @@ export function subscribeGlobalRanking(
         wsConnected = true;
         emitStatus();
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        // Se o WebSocket cair em redes móveis/iOS, não marca offline se o REST HTTPS estiver funcionando!
         wsConnected = false;
         void refresh();
       }
     });
 
-  // Fallback suave por polling a cada 15s caso o WebSocket não esteja ativo (ex: 4G restritivo)
   pollTimer = window.setInterval(() => {
     if (!active || document.hidden || wsConnected) return;
     void refresh();
