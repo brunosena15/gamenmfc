@@ -13,6 +13,10 @@ create index if not exists idx_nmfc_ranking_score_desc
   on public.nmfc_ranking (score desc, created_at asc);
 
 -- Segurança (Row Level Security): todos podem ler e enviar novos placares válidos, ninguém pode apagar/editar
+grant usage on schema public to anon, authenticated;
+grant select, insert on table public.nmfc_ranking to anon, authenticated;
+grant usage, select on all sequences in schema public to anon, authenticated;
+
 alter table public.nmfc_ranking enable row level security;
 
 drop policy if exists "Leitura publica do ranking" on public.nmfc_ranking;

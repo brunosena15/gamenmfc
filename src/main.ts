@@ -612,16 +612,24 @@ async function sendScoreToGlobalRanking(
   try {
     const saved = await submitGlobalScore(nick, characterName, score);
     if (saved) {
-      lastSubmittedOnlineId = saved.id;
+      if (saved.id > 0) {
+        lastSubmittedOnlineId = saved.id;
+      }
       await globalRankingSub?.refresh();
-      const rankIdx = globalRankingEntries.findIndex((e) => e.id === saved.id);
+      const rankIdx =
+        saved.id > 0
+          ? globalRankingEntries.findIndex((e) => e.id === saved.id)
+          : -1;
       const posText = rankIdx >= 0 ? ` (#${rankIdx + 1} no Top 15!)` : '!';
       gameOverOnlineStatus.textContent = `🌍 Salvo no Ranking Global${posText}`;
     } else {
       gameOverOnlineStatus.hidden = true;
     }
   } catch {
-    gameOverOnlineStatus.textContent = '📱 Salvo no Ranking Local (sem conexão online)';
+    const errDetail = getLastConnectionError();
+    gameOverOnlineStatus.textContent = errDetail
+      ? `📱 Salvo local (${errDetail})`
+      : '📱 Salvo no Ranking Local (sem conexão online)';
   }
 }
 

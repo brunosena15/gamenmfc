@@ -155,16 +155,27 @@ export async function submitGlobalScore(
       score: normalizedScore,
     })
     .select('id, nick, character_name, score, created_at')
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
     lastConnectionError = formatErrorMessage(error);
     console.warn('[NMFC Ranking] Erro ao enviar placar:', error);
-    throw error ?? new Error(lastConnectionError);
+    throw error;
   }
 
   lastConnectionError = null;
-  return mapRow(data as RankingRow);
+  if (data) {
+    return mapRow(data as RankingRow);
+  }
+
+  return {
+    id: -1,
+    nick: cleanNick,
+    characterName: cleanChar,
+    score: normalizedScore,
+    date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+    createdAt: new Date().toISOString(),
+  };
 }
 
 export interface GlobalRankingSubscription {
