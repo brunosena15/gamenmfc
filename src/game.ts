@@ -25,13 +25,58 @@ const TARGET_LABELS: Record<TargetId, string> = {
   'bottom-right': 'INF. DIR',
 };
 
-type GamePhase = 'READY' | 'RUNNING_UP' | 'BALL_FLIGHT' | 'GOAL' | 'SAVED';
+export type GameMode = 'infinite' | 'copa';
+export type ShotQuality = 'perfect' | 'good' | 'bad';
+
+export interface CopaSnapshot {
+  playerResults: Array<'goal' | 'miss'>;
+  cpuResults: Array<'goal' | 'miss'>;
+  turn: 'player' | 'cpu';
+  round: number;
+  suddenDeath: boolean;
+  cpuName: string;
+}
+
+export interface HudStatus {
+  streak: number;
+  hasShield: boolean;
+  onFire: boolean;
+  paredao: boolean;
+  mode: GameMode;
+  copa: CopaSnapshot | null;
+}
+
+export interface GameOverInfo {
+  mode: GameMode;
+  finalScore: number;
+  isNewRecord: boolean;
+  reason: 'saved' | 'post' | 'copa-win' | 'copa-loss';
+  isCaus: boolean;
+  copaPlayerGoals?: number;
+  copaCpuGoals?: number;
+}
 
 export interface GameCallbacks {
-  onScoreChange: (score: number, isNewRecord: boolean) => void;
-  onGameOver: (finalScore: number, isNewRecord: boolean) => void;
+  onScoreChange: (score: number, goalsAdded: number, isNewRecord: boolean) => void;
+  onHudStatusChange: (status: HudStatus) => void;
+  onGameOver: (info: GameOverInfo) => void;
   onFirstKick: () => void;
 }
+
+type GamePhase =
+  | 'READY'
+  | 'TIMING'
+  | 'RUNNING_UP'
+  | 'BALL_FLIGHT'
+  | 'GOAL'
+  | 'SAVED'
+  | 'POST_MISS'
+  | 'SHIELD_SAVED'
+  | 'DEFEND_READY'
+  | 'DEFEND_RUNUP'
+  | 'DEFEND_FLIGHT'
+  | 'DEFEND_SAVED'
+  | 'DEFEND_CONCEDED';
 
 interface Point {
   x: number;
@@ -55,8 +100,8 @@ interface Particle {
 }
 
 interface CrowdMember {
-  nx: number; // 0..1 ao longo da arquibancada
-  row: number; // 0..3
+  nx: number;
+  row: number;
   color: string;
   phase: number;
 }
@@ -103,9 +148,14 @@ export class PenaltyGame {
   private ctx: CanvasRenderingContext2D;
   private callbacks: GameCallbacks;
 
+  private mode: GameMode = 'infinite';
   private character!: CharacterDef;
   private sprites: CharacterSprites | null = null;
   private goalkeeperSprites: CharacterSprites | null = null;
+
+  // Elenco para escolher batedores do PC no Modo Copa
+  private cpuOpponents: Array<{ def: CharacterDef; sprites: CharacterSprites | null }> = [];
+  private activeCpuIndex = 0;
 
   private metrics!: LayoutMetrics;
   private dpr = 1;
@@ -117,14 +167,47 @@ export class PenaltyGame {
   private phaseTimer = 0;
 
   private score = 0;
+  private streak = 0;
+  private shotsTaken = 0;
+  private hasShield = false;
   private highScoreAtStart = 0;
   private achievedNewRecord = false;
   private hasKickedOnce = false;
+
+  // Alvo bônus dourado (aparece a cada 3 cobranças no modo Infinito)
+  private bonusTarget: TargetId | null = null;
+
+  // Barra de precisão (Timing)
+  private timingCursor = 0.5;
+  private timingDir = 1;
+  private timingSpeed = 1.65;
+  private shotQuality: ShotQuality = 'good';
+
+  // Paradinha & Cavadinha & Câmera lenta
+  private didParadinha = false;
+  private paradinhaPause = 0;
+  private paradinhaBannerTimer = 0;
+  private isCavadinha = false;
+  private timeScale = 1;
 
   // Estado da cobrança atual
   private playerTarget: TargetId = 'center';
   private keeperTarget: TargetId = 'center';
   private isGoalShot = false;
+  private postHitIn = false;
+  private postImpactPoint: Point = { x: 0, y: 0 };
+
+  // Estado da Copa (5 cobranças + morte súbita)
+  private copaPlayerResults: Array<'goal' | 'miss'> = [];
+  private copaCpuResults: Array<'goal' | 'miss'> = [];
+  private copaTurn: 'player' | 'cpu' = 'player';
+  private copaFinished = false;
+
+  // Efeitos exclusivos de personagem
+  private pedroCarActive = false;
+  private pedroCarX = -120;
+  private robinComicTimer = 0;
+  private robinComicWord = 'POW!';
 
   // Bola
   private ballPos: Point = { x: 0, y: 0 };
@@ -132,7 +215,7 @@ export class PenaltyGame {
   private ballRotation = 0;
   private ballShadowPos: Point = { x: 0, y: 0 };
   private ballVel: Point = { x: 0, y: 0 };
-  private ballTrail: Array<{ x: number; y: number; r: number; alpha: number }> = [];
+  private ballTrail: Array<{ x: number; y: number; r: number; alpha: number; fire: boolean }> = [];
 
   // Rede / Feedback
   private netBulge = 0;
@@ -143,10 +226,8 @@ export class PenaltyGame {
   private bannerColor = '#22c55e';
   private bannerTimer = 0;
 
-  // Goleiro
+  // Goleiro e Batedor
   private keeperProgress = 0;
-
-  // Batedor
   private kickerProgress = 0;
   private lastStrideStep = -1;
   private kickSwooshTimer = 0;
@@ -210,24 +291,46 @@ export class PenaltyGame {
     }
   }
 
+  public setCpuOpponents(opponents: Array<{ def: CharacterDef; sprites: CharacterSprites | null }>): void {
+    this.cpuOpponents = opponents;
+  }
+
   public startSession(
     character: CharacterDef,
     sprites: CharacterSprites | null,
-    currentHighScore: number
+    currentHighScore: number,
+    mode: GameMode = 'infinite'
   ): void {
+    this.mode = mode;
     this.character = character;
     this.sprites = sprites;
     if (character.goalSoundUrl) {
       soundEngine.preloadCustomSound(character.goalSoundUrl);
     }
+
     this.score = 0;
+    this.streak = 0;
+    this.shotsTaken = 0;
+    this.hasShield = false;
     this.highScoreAtStart = currentHighScore;
     this.achievedNewRecord = false;
     this.hasKickedOnce = false;
+    this.bonusTarget = null;
+
+    this.copaPlayerResults = [];
+    this.copaCpuResults = [];
+    this.copaTurn = 'player';
+    this.copaFinished = false;
+    this.pickNextCpuOpponent();
+
     this.particles = [];
     this.crowdExcitement = 0;
+    this.pedroCarActive = false;
+    this.robinComicTimer = 0;
+
     this.updateCanvasSize();
     this.resetRound(true);
+    this.emitHudStatus();
 
     if (this.rafId === null) {
       this.lastTimestamp = performance.now();
@@ -263,8 +366,65 @@ export class PenaltyGame {
     window.removeEventListener('pointercancel', this.boundPointerUp);
   }
 
+  private get isOnFire(): boolean {
+    return this.streak >= 3;
+  }
+
+  private get isParedao(): boolean {
+    return this.mode === 'infinite' && this.streak >= 5;
+  }
+
+  private pickNextCpuOpponent(): void {
+    if (this.cpuOpponents.length === 0) {
+      this.activeCpuIndex = 0;
+      return;
+    }
+    this.activeCpuIndex = Math.floor(Math.random() * this.cpuOpponents.length);
+  }
+
+  private getActiveKickerSprites(): CharacterSprites | null {
+    if (
+      this.phase === 'DEFEND_READY' ||
+      this.phase === 'DEFEND_RUNUP' ||
+      this.phase === 'DEFEND_FLIGHT' ||
+      this.phase === 'DEFEND_SAVED' ||
+      this.phase === 'DEFEND_CONCEDED'
+    ) {
+      return this.cpuOpponents[this.activeCpuIndex]?.sprites ?? this.sprites;
+    }
+    return this.sprites;
+  }
+
+  private getActiveCpuName(): string {
+    return this.cpuOpponents[this.activeCpuIndex]?.def.name ?? 'Rival';
+  }
+
+  private emitHudStatus(): void {
+    let copa: CopaSnapshot | null = null;
+    if (this.mode === 'copa') {
+      const round = Math.max(this.copaPlayerResults.length, this.copaCpuResults.length) +
+        (this.copaTurn === 'player' ? 1 : 0);
+      copa = {
+        playerResults: [...this.copaPlayerResults],
+        cpuResults: [...this.copaCpuResults],
+        turn: this.copaTurn,
+        round: Math.max(1, round),
+        suddenDeath: this.copaPlayerResults.length >= 5 && this.copaCpuResults.length >= 5,
+        cpuName: this.getActiveCpuName(),
+      };
+    }
+
+    this.callbacks.onHudStatusChange({
+      streak: this.streak,
+      hasShield: this.hasShield,
+      onFire: this.isOnFire,
+      paredao: this.isParedao,
+      mode: this.mode,
+      copa,
+    });
+  }
+
   private resetRound(playWhistleSound: boolean): void {
-    this.phase = 'READY';
     this.phaseTimer = 0;
     this.keeperProgress = 0;
     this.kickerProgress = 0;
@@ -273,6 +433,11 @@ export class PenaltyGame {
     this.netBulge = 0;
     this.ballTrail = [];
     this.bannerTimer = 0;
+    this.didParadinha = false;
+    this.paradinhaPause = 0;
+    this.paradinhaBannerTimer = 0;
+    this.isCavadinha = false;
+    this.timeScale = 1;
     this.pointerActive = false;
     this.isSwiping = false;
     this.hoveredTarget = null;
@@ -281,6 +446,22 @@ export class PenaltyGame {
     this.ballShadowPos = { ...this.metrics.ballStart };
     this.ballScale = 1;
     this.ballRotation = 0;
+
+    if (this.mode === 'copa' && this.copaTurn === 'cpu') {
+      this.pickNextCpuOpponent();
+      this.phase = 'DEFEND_READY';
+      this.bonusTarget = null;
+    } else {
+      this.phase = 'READY';
+      // Alvo bônus dourado aparece a cada 3 cobranças no Modo Infinito
+      if (this.mode === 'infinite' && this.shotsTaken > 0 && (this.shotsTaken + 1) % 3 === 0) {
+        this.bonusTarget = Math.random() < 0.5 ? 'top-left' : 'top-right';
+      } else {
+        this.bonusTarget = null;
+      }
+    }
+
+    this.emitHudStatus();
 
     if (playWhistleSound) {
       soundEngine.playWhistle();
@@ -340,7 +521,7 @@ export class PenaltyGame {
       targetRadius,
     };
 
-    if (this.phase === 'READY') {
+    if (this.phase === 'READY' || this.phase === 'TIMING' || this.phase === 'DEFEND_READY') {
       this.ballPos = { ...ballStart };
       this.ballShadowPos = { ...ballStart };
     }
@@ -356,10 +537,9 @@ export class PenaltyGame {
 
   private findTappedTarget(pt: Point): TargetId | null {
     const m = this.metrics;
-    const padX = m.goalW * 0.08;
-    const padY = m.goalH * 0.18;
+    const padX = m.goalW * 0.1;
+    const padY = m.goalH * 0.22;
 
-    // Se tocou dentro da região expandida do gol, escolhe o alvo mais próximo
     const inGoalArea =
       pt.x >= m.goalLeft - padX &&
       pt.x <= m.goalRight + padX &&
@@ -386,16 +566,12 @@ export class PenaltyGame {
   private resolveSwipeTarget(start: Point, current: Point): TargetId | null {
     const dx = current.x - start.x;
     const dy = current.y - start.y;
-
-    // Exige movimento para cima (em direção ao gol)
     if (dy > -22) return null;
 
-    // Se o dedo já está na área do gol, trava no alvo mais próximo do dedo
     const direct = this.findTappedTarget(current);
     if (direct) return direct;
 
     const m = this.metrics;
-    // Projeta o vetor do swipe até a altura do gol
     const travelY = Math.max(120, m.ballStart.y - m.goalBottom);
     const slopeX = dx / Math.max(30, -dy);
     const projectedX = m.ballStart.x + slopeX * travelY;
@@ -404,17 +580,36 @@ export class PenaltyGame {
     const swipeUpDist = -dy;
     const isHigh = swipeUpDist >= m.h * 0.165 || current.y < m.h * 0.55;
 
-    if (relX < -0.26) {
-      return isHigh ? 'top-left' : 'bottom-left';
-    }
-    if (relX > 0.26) {
-      return isHigh ? 'top-right' : 'bottom-right';
-    }
+    if (relX < -0.26) return isHigh ? 'top-left' : 'bottom-left';
+    if (relX > 0.26) return isHigh ? 'top-right' : 'bottom-right';
     return 'center';
   }
 
   private handlePointerDown(e: PointerEvent): void {
     soundEngine.unlock();
+
+    // 1. Fase TIMING: 1 toque em qualquer lugar trava a força/precisão!
+    if (this.phase === 'TIMING') {
+      this.lockTimingAndRun();
+      return;
+    }
+
+    // 2. Fase RUNNING_UP: toque durante a corrida faz a PARADINHA!
+    if (this.phase === 'RUNNING_UP' && !this.didParadinha && this.kickerProgress < 0.68) {
+      this.triggerParadinha();
+      return;
+    }
+
+    // 3. Fase DEFEND_READY (Modo Copa): toque no canto onde o jogador quer pular com o goleiro!
+    if (this.phase === 'DEFEND_READY') {
+      const pt = this.getCanvasPoint(e);
+      const chosenDive = this.findTappedTarget(pt);
+      if (chosenDive) {
+        this.startCpuKick(chosenDive);
+      }
+      return;
+    }
+
     if (this.phase !== 'READY') return;
 
     const pt = this.getCanvasPoint(e);
@@ -470,28 +665,45 @@ export class PenaltyGame {
     this.hoveredTarget = null;
 
     if (chosen) {
-      this.executeKick(chosen);
+      this.beginTimingPhase(chosen);
     }
   }
 
-  private chooseKeeperTarget(playerTarget: TargetId): TargetId {
-    if (this.character.alwaysSaved) {
-      // Regra especial oculta: personagens/caus.jpg sempre é lido pelo goleiro (100% defesa)
-      return playerTarget;
-    }
-    const randomIdx = Math.floor(Math.random() * TARGET_IDS.length);
-    return TARGET_IDS[randomIdx];
-  }
-
-  private executeKick(target: TargetId): void {
+  private beginTimingPhase(target: TargetId): void {
     if (!this.hasKickedOnce) {
       this.hasKickedOnce = true;
       this.callbacks.onFirstKick();
     }
 
     this.playerTarget = target;
-    this.keeperTarget = this.chooseKeeperTarget(target);
-    this.isGoalShot = this.keeperTarget !== this.playerTarget;
+    this.phase = 'TIMING';
+    this.phaseTimer = 0;
+
+    // Começa de um lado aleatório para sempre exigir reflexo real
+    this.timingCursor = Math.random() < 0.5 ? 0.08 : 0.92;
+    this.timingDir = this.timingCursor < 0.5 ? 1 : -1;
+    // Acelera conforme a sequência sobe (Modo Paredão mais desafiador!)
+    const streakBoost = this.mode === 'infinite' ? Math.min(1.45, this.streak * 0.14) : 0.25;
+    this.timingSpeed = 1.6 + streakBoost;
+    soundEngine.playSelect();
+  }
+
+  private lockTimingAndRun(): void {
+    const pos = this.timingCursor;
+    if (pos >= 0.4 && pos <= 0.6) {
+      this.shotQuality = 'perfect';
+    } else if (pos >= 0.15 && pos <= 0.85) {
+      this.shotQuality = 'good';
+    } else {
+      this.shotQuality = 'bad';
+    }
+
+    this.didParadinha = false;
+    this.paradinhaPause = 0;
+    this.paradinhaBannerTimer = 0;
+    this.shotsTaken += 1;
+
+    this.computeShotOutcome();
 
     this.phase = 'RUNNING_UP';
     this.phaseTimer = 0;
@@ -500,6 +712,101 @@ export class PenaltyGame {
     this.kickSwooshTimer = 0;
     this.keeperProgress = 0;
     this.ballTrail = [];
+  }
+
+  private triggerParadinha(): void {
+    this.didParadinha = true;
+    this.paradinhaPause = 0.27;
+    this.paradinhaBannerTimer = 0.72;
+    soundEngine.playFeint();
+
+    // Recalcula desfecho com vantagem da paradinha (goleiro cai antes pro lado errado — exceto no Caus!)
+    this.computeShotOutcome();
+  }
+
+  private chooseRandomOtherTarget(exclude: TargetId): TargetId {
+    const others = TARGET_IDS.filter((id) => id !== exclude);
+    return others[Math.floor(Math.random() * others.length)];
+  }
+
+  private computeShotOutcome(): void {
+    this.isCavadinha =
+      this.playerTarget === 'center' && (this.shotQuality === 'perfect' || this.didParadinha);
+    this.postHitIn = false;
+
+    // REGRA ESPECIAL OCULTA: personagens/caus.jpg é SEMPRE defendido 100% pelo goleiro!
+    if (this.character.alwaysSaved) {
+      this.keeperTarget = this.playerTarget;
+      this.isGoalShot = false;
+      this.postHitIn = false;
+      return;
+    }
+
+    // Zona vermelha (errou feio o timing): bola vai na trave!
+    if (this.shotQuality === 'bad') {
+      this.keeperTarget = TARGET_IDS[Math.floor(Math.random() * TARGET_IDS.length)];
+      // 30% de sorte: bate na trave e entra chorando! 70%: sai para fora
+      this.postHitIn = Math.random() < 0.3;
+      this.isGoalShot = this.postHitIn;
+      const m = this.metrics;
+      if (this.playerTarget.includes('left')) {
+        this.postImpactPoint = { x: m.goalLeft + 3, y: m.targets[this.playerTarget].y };
+      } else if (this.playerTarget.includes('right')) {
+        this.postImpactPoint = { x: m.goalRight - 3, y: m.targets[this.playerTarget].y };
+      } else {
+        this.postImpactPoint = { x: m.w * 0.5, y: m.goalTop + 3 };
+      }
+      return;
+    }
+
+    // Zona Dourada (Perfeito — NA GAVETA!): indefensável mesmo se o goleiro adivinhar o canto!
+    if (this.shotQuality === 'perfect') {
+      const randomIdx = Math.floor(Math.random() * TARGET_IDS.length);
+      this.keeperTarget = TARGET_IDS[randomIdx];
+      // Se fez paradinha, goleiro pula pro outro lado!
+      if (this.didParadinha && this.keeperTarget === this.playerTarget) {
+        this.keeperTarget = this.chooseRandomOtherTarget(this.playerTarget);
+      }
+      this.isGoalShot = true;
+      return;
+    }
+
+    // Zona Verde (Chute bom normal):
+    if (this.didParadinha) {
+      // Paradinha engana o goleiro na maior parte das vezes (85% de deslocar ele)
+      this.keeperTarget =
+        Math.random() < 0.85
+          ? this.chooseRandomOtherTarget(this.playerTarget)
+          : this.playerTarget;
+    } else {
+      // No Modo Paredão (5+ seguidos), goleiro tem leve chance extra (30% vs 20%)
+      const saveChance = this.isParedao ? 0.3 : 0.2;
+      if (Math.random() < saveChance) {
+        this.keeperTarget = this.playerTarget;
+      } else {
+        this.keeperTarget = this.chooseRandomOtherTarget(this.playerTarget);
+      }
+    }
+
+    this.isGoalShot = this.keeperTarget !== this.playerTarget;
+  }
+
+  private startCpuKick(playerDiveChoice: TargetId): void {
+    this.keeperTarget = playerDiveChoice;
+    // PC escolhe aleatoriamente 1 dos 5 cantos
+    this.playerTarget = TARGET_IDS[Math.floor(Math.random() * TARGET_IDS.length)];
+    this.isGoalShot = this.keeperTarget !== this.playerTarget;
+    this.shotQuality = 'good';
+    this.isCavadinha = false;
+
+    this.phase = 'DEFEND_RUNUP';
+    this.phaseTimer = 0;
+    this.kickerProgress = 0;
+    this.keeperProgress = 0;
+    this.lastStrideStep = -1;
+    this.kickSwooshTimer = 0;
+    this.ballTrail = [];
+    soundEngine.playSelect();
   }
 
   private spawnStepDust(x: number, y: number): void {
@@ -522,22 +829,28 @@ export class PenaltyGame {
     }
   }
 
-  private spawnKickDust(): void {
+  private spawnKickDust(isFire: boolean): void {
     const { x, y } = this.metrics.ballStart;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < (isFire ? 16 : 10); i++) {
       const ang = -Math.PI * (0.15 + Math.random() * 0.7);
-      const spd = 45 + Math.random() * 110;
+      const spd = 45 + Math.random() * 125;
       this.particles.push({
         x: x + (Math.random() - 0.5) * 14,
         y: y + 10,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd * 0.65,
-        size: 3 + Math.random() * 4,
-        color: i % 2 === 0 ? '#86efac' : '#dcfce7',
-        alpha: 0.9,
+        size: 3 + Math.random() * 4.5,
+        color: isFire
+          ? i % 2 === 0
+            ? '#facc15'
+            : '#fb923c'
+          : i % 2 === 0
+            ? '#86efac'
+            : '#dcfce7',
+        alpha: 0.92,
         life: 0,
         maxLife: 0.35 + Math.random() * 0.25,
-        gravity: 240,
+        gravity: 230,
         rotation: Math.random() * Math.PI,
         vr: (Math.random() - 0.5) * 8,
         shape: 'circle',
@@ -550,9 +863,9 @@ export class PenaltyGame {
     const cx = this.metrics.w * 0.5;
     const cy = this.metrics.goalTop + this.metrics.goalH * 0.35;
 
-    for (let i = 0; i < 55; i++) {
+    for (let i = 0; i < 60; i++) {
       const ang = -Math.PI * 0.5 + (Math.random() - 0.5) * Math.PI * 1.4;
-      const spd = 120 + Math.random() * 280;
+      const spd = 120 + Math.random() * 290;
       this.particles.push({
         x: cx + (Math.random() - 0.5) * this.metrics.goalW * 0.75,
         y: cy + (Math.random() - 0.5) * 30,
@@ -571,21 +884,21 @@ export class PenaltyGame {
     }
   }
 
-  private spawnSaveSparks(impact: Point): void {
-    const colors = ['#ffffff', '#facc15', '#fb923c', '#ff4757'];
-    for (let i = 0; i < 22; i++) {
+  private spawnSaveSparks(impact: Point, palette?: string[]): void {
+    const colors = palette ?? ['#ffffff', '#facc15', '#fb923c', '#ff4757'];
+    for (let i = 0; i < 24; i++) {
       const ang = Math.random() * Math.PI * 2;
-      const spd = 70 + Math.random() * 180;
+      const spd = 75 + Math.random() * 190;
       this.particles.push({
         x: impact.x,
         y: impact.y,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
-        size: 3 + Math.random() * 4.5,
+        size: 3 + Math.random() * 4.8,
         color: colors[i % colors.length],
         alpha: 1,
         life: 0,
-        maxLife: 0.42 + Math.random() * 0.25,
+        maxLife: 0.44 + Math.random() * 0.25,
         gravity: 220,
         rotation: 0,
         vr: 0,
@@ -595,46 +908,74 @@ export class PenaltyGame {
   }
 
   private loop = (timestamp: number): void => {
-    const dt = Math.min(0.05, Math.max(0.001, (timestamp - this.lastTimestamp) / 1000));
+    const rawDt = Math.min(0.05, Math.max(0.001, (timestamp - this.lastTimestamp) / 1000));
     this.lastTimestamp = timestamp;
-    this.elapsed += dt;
+    this.elapsed += rawDt;
 
-    this.update(dt);
+    this.update(rawDt);
     this.render();
 
     this.rafId = requestAnimationFrame(this.loop);
   };
 
-  private update(dt: number): void {
+  private update(rawDt: number): void {
+    const dt = rawDt * this.timeScale;
     this.phaseTimer += dt;
-    this.screenShake = Math.max(0, this.screenShake - dt * 24);
-    this.netBulge = Math.max(0, this.netBulge - dt * 1.9);
-    this.crowdExcitement = Math.max(0, this.crowdExcitement - dt * 0.75);
-    if (this.kickSwooshTimer > 0) {
-      this.kickSwooshTimer = Math.max(0, this.kickSwooshTimer - dt);
+    this.screenShake = Math.max(0, this.screenShake - rawDt * 24);
+    this.netBulge = Math.max(0, this.netBulge - rawDt * 1.9);
+    this.crowdExcitement = Math.max(0, this.crowdExcitement - rawDt * 0.7);
+    if (this.kickSwooshTimer > 0) this.kickSwooshTimer = Math.max(0, this.kickSwooshTimer - rawDt);
+    if (this.bannerTimer > 0) this.bannerTimer = Math.max(0, this.bannerTimer - rawDt);
+    if (this.paradinhaBannerTimer > 0) {
+      this.paradinhaBannerTimer = Math.max(0, this.paradinhaBannerTimer - rawDt);
     }
-    if (this.bannerTimer > 0) {
-      this.bannerTimer = Math.max(0, this.bannerTimer - dt);
+    if (this.robinComicTimer > 0) {
+      this.robinComicTimer = Math.max(0, this.robinComicTimer - rawDt);
     }
 
-    // Atualiza partículas
+    // Carro #95 do Pedro atravessando o campo comemorando
+    if (this.pedroCarActive) {
+      this.pedroCarX += rawDt * (this.metrics.w * 1.45);
+      if (Math.random() < 0.65) {
+        this.particles.push({
+          x: this.pedroCarX - 38,
+          y: this.metrics.goalBottom + 18 + (Math.random() - 0.5) * 6,
+          vx: -80 - Math.random() * 60,
+          vy: -20 - Math.random() * 35,
+          size: 3.5 + Math.random() * 3.5,
+          color: Math.random() < 0.5 ? '#facc15' : '#fb923c',
+          alpha: 0.9,
+          life: 0,
+          maxLife: 0.35,
+          gravity: 120,
+          rotation: 0,
+          vr: 0,
+          shape: 'circle',
+        });
+      }
+      if (this.pedroCarX > this.metrics.w + 130) {
+        this.pedroCarActive = false;
+      }
+    }
+
+    // Partículas
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
-      p.life += dt;
+      p.life += rawDt;
       if (p.life >= p.maxLife) {
         this.particles.splice(i, 1);
         continue;
       }
-      p.vy += p.gravity * dt;
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      p.rotation += p.vr * dt;
+      p.vy += p.gravity * rawDt;
+      p.x += p.vx * rawDt;
+      p.y += p.vy * rawDt;
+      p.rotation += p.vr * rawDt;
       p.alpha = 1 - p.life / p.maxLife;
     }
 
-    // Atualiza rastro da bola
+    // Rastro da bola
     for (let i = this.ballTrail.length - 1; i >= 0; i--) {
-      this.ballTrail[i].alpha -= dt * 3.4;
+      this.ballTrail[i].alpha -= rawDt * 3.2;
       if (this.ballTrail[i].alpha <= 0) {
         this.ballTrail.splice(i, 1);
       }
@@ -642,11 +983,37 @@ export class PenaltyGame {
 
     const m = this.metrics;
 
-    if (this.phase === 'RUNNING_UP') {
-      const duration = 0.56;
-      this.kickerProgress = clamp(this.phaseTimer / duration, 0, 1);
+    // ===== FASE TIMING (BARRA DE PRECISÃO) =====
+    if (this.phase === 'TIMING') {
+      this.timingCursor += this.timingDir * this.timingSpeed * rawDt;
+      if (this.timingCursor >= 1) {
+        this.timingCursor = 1;
+        this.timingDir = -1;
+      } else if (this.timingCursor <= 0) {
+        this.timingCursor = 0;
+        this.timingDir = 1;
+      }
+      // Segurança: se o jogador não tocar em 3.5s, chuta automático
+      if (this.phaseTimer >= 3.5) {
+        this.lockTimingAndRun();
+      }
+      return;
+    }
 
-      // Solta tufinhos de grama a cada pisada da corrida (primeiros 75%)
+    // ===== FASE CORRIDA DO JOGADOR =====
+    if (this.phase === 'RUNNING_UP') {
+      if (this.paradinhaPause > 0) {
+        this.paradinhaPause = Math.max(0, this.paradinhaPause - rawDt);
+        // Durante a paradinha, o goleiro já se antecipa (exceto se for o Caus!)
+        if (!this.character.alwaysSaved) {
+          this.keeperProgress = clamp(this.keeperProgress + rawDt * 1.15, 0, 0.42);
+        }
+        return;
+      }
+
+      const duration = 0.56;
+      this.kickerProgress = clamp(this.kickerProgress + dt / duration, 0, 1);
+
       if (this.kickerProgress < 0.78) {
         const strideIdx = Math.floor((this.kickerProgress / 0.78) * 4);
         if (strideIdx > this.lastStrideStep) {
@@ -658,158 +1025,497 @@ export class PenaltyGame {
         }
       }
 
-      if (this.phaseTimer >= duration) {
+      if (this.kickerProgress >= 1) {
         this.phase = 'BALL_FLIGHT';
         this.phaseTimer = 0;
         this.kickSwooshTimer = 0.24;
-        soundEngine.playKick();
-        this.spawnKickDust();
-      }
-    } else if (this.phase === 'BALL_FLIGHT') {
-      const flightDuration = 0.44;
-      const t = clamp(this.phaseTimer / flightDuration, 0, 1);
-      const targetPt = m.targets[this.playerTarget];
 
-      // Arco 3D-falso (altura maior para chutes altos)
+        const isFireShot = this.shotQuality === 'perfect' || this.isOnFire;
+        if (this.shotQuality === 'perfect') {
+          soundEngine.playPerfectKick();
+        } else {
+          soundEngine.playKick();
+        }
+        this.spawnKickDust(isFireShot);
+
+        // Câmera lenta dramática nos momentos épicos!
+        const isCausPerfect = this.character.alwaysSaved && this.shotQuality === 'perfect';
+        const isRecordShot =
+          this.mode === 'infinite' &&
+          this.isGoalShot &&
+          this.highScoreAtStart > 0 &&
+          this.score === this.highScoreAtStart;
+
+        if (this.isCavadinha || isCausPerfect || this.shotQuality === 'bad' || isRecordShot) {
+          this.timeScale = 0.62;
+        } else {
+          this.timeScale = 1;
+        }
+      }
+      return;
+    }
+
+    // ===== FASE VOO DA BOLA (ATAQUE) =====
+    if (this.phase === 'BALL_FLIGHT') {
+      const flightDuration = this.isCavadinha ? 0.58 : this.shotQuality === 'perfect' ? 0.38 : 0.44;
+      const t = clamp(this.phaseTimer / flightDuration, 0, 1);
+      const destPt =
+        this.shotQuality === 'bad' ? this.postImpactPoint : m.targets[this.playerTarget];
+
       const isTop = this.playerTarget === 'top-left' || this.playerTarget === 'top-right';
-      const arcHeight = isTop ? m.h * 0.08 : m.h * 0.035;
-      const curveX =
-        this.playerTarget.includes('left')
-          ? -m.w * 0.04
-          : this.playerTarget.includes('right')
-            ? m.w * 0.04
-            : 0;
+      const arcHeight = this.isCavadinha
+        ? m.h * 0.14
+        : isTop
+          ? m.h * 0.08
+          : m.h * 0.035;
+      const curveX = this.playerTarget.includes('left')
+        ? -m.w * 0.045
+        : this.playerTarget.includes('right')
+          ? m.w * 0.045
+          : 0;
 
       const et = easeOutCubic(t);
-      const bx = lerp(m.ballStart.x, targetPt.x, et) + Math.sin(t * Math.PI) * curveX;
-      const by = lerp(m.ballStart.y, targetPt.y, et) - Math.sin(t * Math.PI) * arcHeight;
+      const bx = lerp(m.ballStart.x, destPt.x, et) + Math.sin(t * Math.PI) * curveX;
+      const by = lerp(m.ballStart.y, destPt.y, et) - Math.sin(t * Math.PI) * arcHeight;
 
       this.ballPos = { x: bx, y: by };
       this.ballScale = lerp(1, 0.54, et);
-      this.ballRotation += dt * 19;
-
-      // Sombra acompanha no chão
+      this.ballRotation += dt * (this.isCavadinha ? 8 : 20);
       this.ballShadowPos = {
         x: bx,
         y: lerp(m.ballStart.y + m.ballRadius * 0.65, m.goalBottom + 2, et),
       };
 
-      // Rastro luminoso
-      if (t < 0.95) {
+      const fireTrail = this.shotQuality === 'perfect' || this.isOnFire;
+      if (t < 0.96) {
         this.ballTrail.push({
           x: bx,
           y: by,
-          r: m.ballRadius * this.ballScale * 0.85,
-          alpha: 0.36,
+          r: m.ballRadius * this.ballScale * (fireTrail ? 0.95 : 0.8),
+          alpha: fireTrail ? 0.55 : 0.34,
+          fire: fireTrail,
         });
       }
 
-      // Goleiro salta sincronizado (com reação humana ultrarrápida após 10% do voo)
-      const keeperT = clamp((t - 0.06) / 0.88, 0, 1);
-      this.keeperProgress = easeOutCubic(keeperT);
+      const keeperStart = this.didParadinha && !this.character.alwaysSaved ? 0 : 0.06;
+      const keeperT = clamp((t - keeperStart) / (1 - keeperStart), 0, 1);
+      this.keeperProgress = Math.max(this.keeperProgress, easeOutCubic(keeperT));
 
       if (t >= 1) {
-        this.resolveImpact(targetPt);
+        this.timeScale = 1;
+        this.resolveAttackImpact(destPt);
       }
-    } else if (this.phase === 'GOAL') {
-      // Bola assenta dentro da rede
+      return;
+    }
+
+    // ===== RESULTADO: GOL =====
+    if (this.phase === 'GOAL') {
       const targetPt = m.targets[this.playerTarget];
       const settleT = clamp(this.phaseTimer / 0.35, 0, 1);
       this.ballPos = {
         x: lerp(targetPt.x, targetPt.x + (targetPt.x - m.w * 0.5) * 0.06, settleT),
         y: lerp(targetPt.y, m.goalBottom - m.ballRadius * 0.55, easeOutCubic(settleT)),
       };
-      this.ballShadowPos = {
-        x: this.ballPos.x,
-        y: m.goalBottom - 2,
-      };
+      this.ballShadowPos = { x: this.ballPos.x, y: m.goalBottom - 2 };
       this.ballRotation += dt * 5 * (1 - settleT);
 
-      if (this.phaseTimer >= 1.32) {
+      if (this.phaseTimer >= 1.38) {
+        this.advanceAfterAttack('goal');
+      }
+      return;
+    }
+
+    // ===== RESULTADO: ESCUDO SALVOU =====
+    if (this.phase === 'SHIELD_SAVED') {
+      this.updateBouncingBall(dt, m);
+      if (this.phaseTimer >= 1.25) {
         this.resetRound(true);
       }
-    } else if (this.phase === 'SAVED') {
-      // Bola rebate das luvas e quica no gramado
-      this.ballVel.y += 720 * dt;
-      this.ballPos.x += this.ballVel.x * dt;
-      this.ballPos.y += this.ballVel.y * dt;
-      this.ballRotation += dt * 13;
+      return;
+    }
 
-      const groundY = m.goalBottom + 36;
-      if (this.ballPos.y > groundY) {
-        this.ballPos.y = groundY;
-        this.ballVel.y *= -0.45;
-        this.ballVel.x *= 0.82;
+    // ===== RESULTADO: DEFESA OU TRAVE FORA =====
+    if (this.phase === 'SAVED' || this.phase === 'POST_MISS') {
+      this.updateBouncingBall(dt, m);
+      if (this.phaseTimer >= 1.15 && this.phaseTimer - dt < 1.15) {
+        if (this.mode === 'copa') {
+          this.advanceAfterAttack('miss');
+        } else {
+          this.callbacks.onGameOver({
+            mode: 'infinite',
+            finalScore: this.score,
+            isNewRecord: this.achievedNewRecord,
+            reason: this.phase === 'POST_MISS' ? 'post' : 'saved',
+            isCaus: this.character.alwaysSaved,
+          });
+        }
       }
-      this.ballShadowPos = { x: this.ballPos.x, y: groundY + 4 };
+      return;
+    }
 
-      if (this.phaseTimer >= 1.05 && this.phaseTimer - dt < 1.05) {
-        this.callbacks.onGameOver(this.score, this.achievedNewRecord);
+    // ===== MODO COPA: VEZ DO PC BATER (JOGADOR DEFENDE) =====
+    if (this.phase === 'DEFEND_RUNUP') {
+      const duration = 0.48;
+      this.kickerProgress = clamp(this.phaseTimer / duration, 0, 1);
+      if (this.kickerProgress < 0.78) {
+        const strideIdx = Math.floor((this.kickerProgress / 0.78) * 3);
+        if (strideIdx > this.lastStrideStep) {
+          this.lastStrideStep = strideIdx;
+          const runT = clamp(this.kickerProgress / 0.88, 0, 1);
+          this.spawnStepDust(
+            lerp(m.kickerIdle.x, m.kickerKick.x, runT),
+            lerp(m.kickerIdle.y, m.kickerKick.y, runT)
+          );
+        }
+      }
+      if (this.kickerProgress >= 1) {
+        this.phase = 'DEFEND_FLIGHT';
+        this.phaseTimer = 0;
+        this.kickSwooshTimer = 0.22;
+        soundEngine.playKick();
+        this.spawnKickDust(false);
+      }
+      return;
+    }
+
+    if (this.phase === 'DEFEND_FLIGHT') {
+      const flightDuration = 0.43;
+      const t = clamp(this.phaseTimer / flightDuration, 0, 1);
+      const targetPt = m.targets[this.playerTarget];
+      const et = easeOutCubic(t);
+
+      const isTop = this.playerTarget === 'top-left' || this.playerTarget === 'top-right';
+      const arcHeight = isTop ? m.h * 0.08 : m.h * 0.035;
+      const bx = lerp(m.ballStart.x, targetPt.x, et);
+      const by = lerp(m.ballStart.y, targetPt.y, et) - Math.sin(t * Math.PI) * arcHeight;
+
+      this.ballPos = { x: bx, y: by };
+      this.ballScale = lerp(1, 0.54, et);
+      this.ballRotation += dt * 18;
+      this.ballShadowPos = {
+        x: bx,
+        y: lerp(m.ballStart.y + m.ballRadius * 0.65, m.goalBottom + 2, et),
+      };
+
+      if (t < 0.95) {
+        this.ballTrail.push({
+          x: bx,
+          y: by,
+          r: m.ballRadius * this.ballScale * 0.8,
+          alpha: 0.34,
+          fire: false,
+        });
+      }
+
+      this.keeperProgress = easeOutCubic(clamp(t * 1.05, 0, 1));
+
+      if (t >= 1) {
+        this.resolveDefendImpact(targetPt);
+      }
+      return;
+    }
+
+    if (this.phase === 'DEFEND_SAVED') {
+      this.updateBouncingBall(dt, m);
+      if (this.phaseTimer >= 1.25) {
+        this.advanceAfterCpuKick('miss');
+      }
+      return;
+    }
+
+    if (this.phase === 'DEFEND_CONCEDED') {
+      const targetPt = m.targets[this.playerTarget];
+      const settleT = clamp(this.phaseTimer / 0.35, 0, 1);
+      this.ballPos = {
+        x: lerp(targetPt.x, targetPt.x + (targetPt.x - m.w * 0.5) * 0.06, settleT),
+        y: lerp(targetPt.y, m.goalBottom - m.ballRadius * 0.55, easeOutCubic(settleT)),
+      };
+      this.ballShadowPos = { x: this.ballPos.x, y: m.goalBottom - 2 };
+      if (this.phaseTimer >= 1.25) {
+        this.advanceAfterCpuKick('goal');
       }
     }
   }
 
-  private resolveImpact(targetPt: Point): void {
+  private updateBouncingBall(dt: number, m: LayoutMetrics): void {
+    this.ballVel.y += 720 * dt;
+    this.ballPos.x += this.ballVel.x * dt;
+    this.ballPos.y += this.ballVel.y * dt;
+    this.ballRotation += dt * 13;
+
+    const groundY = m.goalBottom + 36;
+    if (this.ballPos.y > groundY) {
+      this.ballPos.y = groundY;
+      this.ballVel.y *= -0.45;
+      this.ballVel.x *= 0.82;
+    }
+    this.ballShadowPos = { x: this.ballPos.x, y: groundY + 4 };
+  }
+
+  private resolveAttackImpact(impactPt: Point): void {
+    // 1. Bola na trave!
+    if (this.shotQuality === 'bad' && !this.character.alwaysSaved) {
+      soundEngine.playPostHit();
+      this.spawnSaveSparks(impactPt, ['#ffffff', '#cbd5e1', '#facc15']);
+      if (!this.postHitIn) {
+        // Escudo salva também se acertar a trave!
+        if (this.mode === 'infinite' && this.hasShield) {
+          this.consumeShieldSave(impactPt, 'A trave perdoou pelo escudo!');
+          return;
+        }
+        this.phase = 'POST_MISS';
+        this.phaseTimer = 0;
+        this.screenShake = 12;
+        this.ballVel = {
+          x: (this.playerTarget.includes('left') ? -1 : 1) * 165,
+          y: -170,
+        };
+        this.bannerText = 'NA TRAVE!';
+        this.bannerSubtext = 'Quase! Faltou caprichar na barra!';
+        this.bannerColor = '#f97316';
+        this.bannerTimer = 1.1;
+        if (navigator.vibrate) navigator.vibrate(95);
+        return;
+      }
+    }
+
+    // 2. GOL!
     if (this.isGoalShot) {
       this.phase = 'GOAL';
       this.phaseTimer = 0;
-      this.score += 1;
+      this.streak += 1;
 
-      const justBeatRecord = this.score > this.highScoreAtStart;
-      const firstTimeBeating = justBeatRecord && !this.achievedNewRecord;
-      if (justBeatRecord) {
-        this.achievedNewRecord = true;
+      const hitBonus = this.mode === 'infinite' && this.bonusTarget === this.playerTarget;
+      const goalsAdded = hitBonus ? 2 : 1;
+      this.score += goalsAdded;
+
+      let gainedShield = false;
+      if (hitBonus && !this.hasShield) {
+        this.hasShield = true;
+        gainedShield = true;
+        soundEngine.playShieldGain();
       }
 
-      this.netBulge = 1;
-      this.netImpact = { ...targetPt };
-      this.crowdExcitement = 1;
-      this.screenShake = 5;
+      const justBeatRecord =
+        this.mode === 'infinite' && this.score > this.highScoreAtStart;
+      const firstTimeBeating = justBeatRecord && !this.achievedNewRecord;
+      if (justBeatRecord) this.achievedNewRecord = true;
 
-      const isTopCorner = this.playerTarget === 'top-left' || this.playerTarget === 'top-right';
-      this.bannerText = isTopCorner ? 'GOLAÇO!' : 'GOL!';
-      this.bannerSubtext = firstTimeBeating
-        ? '⭐ NOVO RECORDE!'
-        : `${this.score} ${this.score === 1 ? 'gol seguido' : 'gols seguidos'}`;
-      this.bannerColor = firstTimeBeating ? '#facc15' : '#22c55e';
-      this.bannerTimer = 1.25;
+      this.netBulge = 1;
+      this.netImpact = { ...this.metrics.targets[this.playerTarget] };
+      this.crowdExcitement = 1;
+      this.screenShake = this.shotQuality === 'perfect' ? 8 : 5;
+
+      // Texto de comemoração contextual
+      if (this.postHitIn) {
+        this.bannerText = 'NA TRAVE E ENTROU!';
+      } else if (this.isCavadinha) {
+        this.bannerText = 'CAVADINHA! 🥄';
+      } else if (hitBonus) {
+        this.bannerText = 'ALVO DOURADO! +2';
+      } else if (this.shotQuality === 'perfect') {
+        this.bannerText = 'NA GAVETA! ⭐';
+      } else {
+        const isTop = this.playerTarget === 'top-left' || this.playerTarget === 'top-right';
+        this.bannerText = isTop ? 'GOLAÇO!' : 'GOL!';
+      }
+
+      if (gainedShield) {
+        this.bannerSubtext = '🛡️ +1 ESCUDO DE PROTEÇÃO!';
+      } else if (firstTimeBeating) {
+        this.bannerSubtext = '⭐ NOVO RECORDE!';
+      } else if (this.mode === 'copa') {
+        this.bannerSubtext = 'Belo pênalti convertido!';
+      } else if (this.isOnFire) {
+        this.bannerSubtext = `🔥 ON FIRE! ${this.score} gols!`;
+      } else {
+        this.bannerSubtext = `${this.score} ${this.score === 1 ? 'gol seguido' : 'gols seguidos'}`;
+      }
+
+      this.bannerColor = hitBonus || firstTimeBeating || this.shotQuality === 'perfect'
+        ? '#facc15'
+        : '#22c55e';
+      this.bannerTimer = 1.3;
+
+      // Efeitos exclusivos de personagem!
+      if (this.character.id === 'pedro') {
+        this.pedroCarActive = true;
+        this.pedroCarX = -90;
+      } else if (this.character.id === 'robin') {
+        const words = ['POW!', 'BAM!', 'ZAP!', 'GOLAÇO!'];
+        this.robinComicWord = words[Math.floor(Math.random() * words.length)];
+        this.robinComicTimer = 1.2;
+      }
 
       soundEngine.playGoal(firstTimeBeating, this.character.goalSoundUrl);
       this.spawnGoalConfetti();
-      if (navigator.vibrate) {
-        navigator.vibrate([35, 30, 50]);
-      }
+      if (navigator.vibrate) navigator.vibrate([35, 30, 50]);
 
-      this.callbacks.onScoreChange(this.score, justBeatRecord);
+      this.emitHudStatus();
+      this.callbacks.onScoreChange(this.score, goalsAdded, justBeatRecord);
+      return;
+    }
+
+    // 3. DEFESA DO GOLEIRO!
+    if (this.mode === 'infinite' && this.hasShield) {
+      this.consumeShieldSave(impactPt, 'O escudo absorveu a defesa!');
+      return;
+    }
+
+    this.phase = 'SAVED';
+    this.phaseTimer = 0;
+    this.screenShake = 11;
+
+    const dirX = this.playerTarget.includes('left')
+      ? -1
+      : this.playerTarget.includes('right')
+        ? 1
+        : Math.random() < 0.5
+          ? -0.7
+          : 0.7;
+    this.ballVel = {
+      x: dirX * (150 + Math.random() * 70),
+      y: -155,
+    };
+
+    if (this.character.alwaysSaved) {
+      this.bannerText = this.shotQuality === 'perfect' ? 'MILAGRE!' : 'DEFENDEU!';
+      this.bannerSubtext =
+        this.shotQuality === 'perfect'
+          ? 'Nem na gaveta passa hoje, Caus!'
+          : 'O goleiro já sabia esse canto!';
     } else {
-      this.phase = 'SAVED';
-      this.phaseTimer = 0;
-      this.screenShake = 11;
-
-      // Rebote para fora do gol
-      const dirX = this.playerTarget.includes('left')
-        ? -1
-        : this.playerTarget.includes('right')
-          ? 1
-          : Math.random() < 0.5
-            ? -0.7
-            : 0.7;
-      this.ballVel = {
-        x: dirX * (150 + Math.random() * 70),
-        y: -155,
-      };
-
       this.bannerText = 'DEFENDEU!';
       this.bannerSubtext = 'O goleiro buscou no canto!';
+    }
+    this.bannerColor = '#ef4444';
+    this.bannerTimer = 1.1;
+
+    soundEngine.playSave();
+    this.spawnSaveSparks(impactPt);
+    if (navigator.vibrate) navigator.vibrate(95);
+  }
+
+  private consumeShieldSave(impactPt: Point, subtitle: string): void {
+    this.hasShield = false;
+    this.phase = 'SHIELD_SAVED';
+    this.phaseTimer = 0;
+    this.screenShake = 8;
+    this.ballVel = {
+      x: (Math.random() < 0.5 ? -1 : 1) * 140,
+      y: -165,
+    };
+
+    this.bannerText = 'ESCUDO SALVOU! 🛡️';
+    this.bannerSubtext = subtitle;
+    this.bannerColor = '#38bdf8';
+    this.bannerTimer = 1.2;
+
+    soundEngine.playShieldBreak();
+    this.spawnSaveSparks(impactPt, ['#38bdf8', '#7dd3fc', '#ffffff', '#facc15']);
+    this.emitHudStatus();
+  }
+
+  private resolveDefendImpact(targetPt: Point): void {
+    if (!this.isGoalShot) {
+      // Jogador defendeu o pênalti do PC!
+      this.phase = 'DEFEND_SAVED';
+      this.phaseTimer = 0;
+      this.screenShake = 9;
+      this.crowdExcitement = 1;
+      const dirX = this.playerTarget.includes('left') ? -1 : 1;
+      this.ballVel = { x: dirX * 165, y: -165 };
+
+      this.bannerText = 'DEFESAÇA! 🧤';
+      this.bannerSubtext = 'Você fechou o gol!';
+      this.bannerColor = '#38bdf8';
+      this.bannerTimer = 1.2;
+
+      soundEngine.playGoal(false);
+      this.spawnSaveSparks(targetPt, ['#38bdf8', '#facc15', '#ffffff']);
+      if (navigator.vibrate) navigator.vibrate([40, 25, 50]);
+    } else {
+      this.phase = 'DEFEND_CONCEDED';
+      this.phaseTimer = 0;
+      this.netBulge = 1;
+      this.netImpact = { ...targetPt };
+      this.screenShake = 7;
+
+      this.bannerText = 'GOL DO PC!';
+      this.bannerSubtext = `${this.getActiveCpuName()} converteu!`;
       this.bannerColor = '#ef4444';
-      this.bannerTimer = 1.05;
+      this.bannerTimer = 1.2;
 
       soundEngine.playSave();
-      this.spawnSaveSparks(targetPt);
-      if (navigator.vibrate) {
-        navigator.vibrate(95);
-      }
+      if (navigator.vibrate) navigator.vibrate(80);
     }
+  }
+
+  private advanceAfterAttack(result: 'goal' | 'miss'): void {
+    if (this.mode === 'infinite') {
+      this.resetRound(true);
+      return;
+    }
+
+    this.copaPlayerResults.push(result);
+    if (this.checkCopaWinner()) return;
+
+    this.copaTurn = 'cpu';
+    this.resetRound(true);
+  }
+
+  private advanceAfterCpuKick(result: 'goal' | 'miss'): void {
+    this.copaCpuResults.push(result);
+    if (this.checkCopaWinner()) return;
+
+    this.copaTurn = 'player';
+    this.resetRound(true);
+  }
+
+  private checkCopaWinner(): boolean {
+    if (this.copaFinished) return true;
+
+    const pGoals = this.copaPlayerResults.filter((r) => r === 'goal').length;
+    const cGoals = this.copaCpuResults.filter((r) => r === 'goal').length;
+    const pTaken = this.copaPlayerResults.length;
+    const cTaken = this.copaCpuResults.length;
+
+    let winner: 'player' | 'cpu' | null = null;
+
+    if (pTaken <= 5 && cTaken <= 5) {
+      const pRemaining = 5 - pTaken;
+      const cRemaining = 5 - cTaken;
+      if (pGoals > cGoals + cRemaining) {
+        winner = 'player';
+      } else if (cGoals > pGoals + pRemaining) {
+        winner = 'cpu';
+      }
+    } else if (pTaken === cTaken && pGoals !== cGoals) {
+      // Morte súbita!
+      winner = pGoals > cGoals ? 'player' : 'cpu';
+    }
+
+    this.emitHudStatus();
+
+    if (winner) {
+      this.copaFinished = true;
+      if (winner === 'player') {
+        soundEngine.playCopaWin();
+        this.spawnGoalConfetti();
+      }
+      this.callbacks.onGameOver({
+        mode: 'copa',
+        finalScore: pGoals,
+        isNewRecord: false,
+        reason: winner === 'player' ? 'copa-win' : 'copa-loss',
+        isCaus: this.character.alwaysSaved,
+        copaPlayerGoals: pGoals,
+        copaCpuGoals: cGoals,
+      });
+      return true;
+    }
+
+    return false;
   }
 
   // ==================== RENDERIZAÇÃO ====================
@@ -821,7 +1527,6 @@ export class PenaltyGame {
     ctx.save();
     ctx.scale(this.dpr, this.dpr);
 
-    // Screen shake sutil em impacto
     if (this.screenShake > 0.2) {
       const sx = (Math.random() - 0.5) * this.screenShake;
       const sy = (Math.random() - 0.5) * this.screenShake;
@@ -831,38 +1536,336 @@ export class PenaltyGame {
     this.drawStadiumSkyAndLights(ctx, m);
     this.drawStandsAndCrowd(ctx, m);
     this.drawPitch(ctx, m);
+
+    // Carrinho #95 do Pedro comemorando no fundo do campo
+    if (this.pedroCarActive) {
+      this.drawPedroCar95(ctx, m);
+    }
+
     this.drawGoalBackAndNet(ctx, m);
 
-    // Alvos interativos quando aguardando chute
-    if (this.phase === 'READY') {
+    // Alvos de ataque ou defesa
+    if (this.phase === 'READY' || this.phase === 'TIMING' || this.phase === 'DEFEND_READY') {
       this.drawTargets(ctx, m);
     }
 
-    // Goleiro
+    // Goleiro (com aura de Modo Paredão se 5+ seguidos!)
     this.drawGoalkeeper(ctx, m);
 
-    // Trave da frente (sobre a rede e o goleiro para profundidade real)
+    // Trave da frente
     this.drawGoalFrame(ctx, m);
 
-    // Bola atrás ou na frente do goleiro conforme a fase
+    // Bola e rastro
     this.drawBallTrail(ctx);
     this.drawBall(ctx, m);
 
-    // Seta de mira do Swipe (se deslizando)
+    // Guia de swipe
     if (this.phase === 'READY' && this.isSwiping) {
       this.drawSwipeGuide(ctx, m);
     }
 
-    // Batedor em primeiro plano (costas para a câmera)
+    // Batedor em primeiro plano
     this.drawKicker(ctx, m);
 
-    // Partículas (confetes / grama / faíscas)
+    // Barra de precisão (Timing)
+    if (this.phase === 'TIMING') {
+      this.drawTimingBar(ctx, m);
+    }
+
+    // Dica de Paradinha durante a corrida
+    if (this.phase === 'RUNNING_UP' && !this.didParadinha && this.kickerProgress < 0.65) {
+      this.drawParadinhaPrompt(ctx, m);
+    }
+
+    // Banner rápido de Paradinha
+    if (this.paradinhaBannerTimer > 0) {
+      this.drawParadinhaPopup(ctx, m);
+    }
+
+    // Dica de defesa no Modo Copa
+    if (this.phase === 'DEFEND_READY') {
+      this.drawDefendPrompt(ctx, m);
+    }
+
+    // Balão HQ do Robin
+    if (this.robinComicTimer > 0) {
+      this.drawRobinComicBurst(ctx, m);
+    }
+
+    // Partículas
     this.drawParticles(ctx);
 
-    // Banner animado ("GOL!", "GOLAÇO!", "DEFENDEU!")
+    // Aura quente nas bordas quando ON FIRE
+    if (this.isOnFire && this.mode === 'infinite') {
+      this.drawOnFireEdgeGlow(ctx, m);
+    }
+
+    // Banner principal
     if (this.bannerTimer > 0) {
       this.drawBanner(ctx, m);
     }
+
+    ctx.restore();
+  }
+
+  private drawOnFireEdgeGlow(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const pulse = 0.14 + Math.sin(this.elapsed * 7) * 0.05;
+    const grad = ctx.createRadialGradient(
+      m.w * 0.5,
+      m.h * 0.5,
+      m.w * 0.32,
+      m.w * 0.5,
+      m.h * 0.5,
+      m.h * 0.65
+    );
+    grad.addColorStop(0, 'rgba(251, 146, 60, 0)');
+    grad.addColorStop(1, `rgba(249, 115, 22, ${pulse})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, m.w, m.h);
+  }
+
+  private drawTimingBar(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const barW = Math.min(m.w * 0.78, 280);
+    const barH = 22;
+    const bx = (m.w - barW) * 0.5;
+    const by = m.ballStart.y - m.ballRadius * 2.95;
+
+    ctx.save();
+
+    // Fundo escuro
+    ctx.fillStyle = 'rgba(7, 17, 36, 0.9)';
+    ctx.beginPath();
+    ctx.roundRect(bx - 6, by - 26, barW + 12, barH + 34, 14);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Texto de instrução
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '900 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⚡ TOQUE NA TELA PARA CHUTAR!', m.w * 0.5, by - 12);
+
+    // Zonas da barra (Vermelho | Verde | Dourado | Verde | Vermelho)
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(bx, by, barW, barH, 11);
+    ctx.clip();
+
+    // Vermelho (pontas 0..15% e 85..100%)
+    ctx.fillStyle = '#dc2626';
+    ctx.fillRect(bx, by, barW, barH);
+
+    // Verde (15%..85%)
+    ctx.fillStyle = '#16a34a';
+    ctx.fillRect(bx + barW * 0.15, by, barW * 0.7, barH);
+
+    // Dourado Perfeito (40%..60%)
+    const goldGrad = ctx.createLinearGradient(bx + barW * 0.4, by, bx + barW * 0.6, by);
+    goldGrad.addColorStop(0, '#f59e0b');
+    goldGrad.addColorStop(0.5, '#fef08a');
+    goldGrad.addColorStop(1, '#f59e0b');
+    ctx.fillStyle = goldGrad;
+    ctx.fillRect(bx + barW * 0.4, by, barW * 0.2, barH);
+
+    ctx.restore();
+
+    // Borda da barra
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, barW, barH, 11);
+    ctx.stroke();
+
+    // Estrela no centro da zona dourada
+    ctx.fillStyle = '#09152b';
+    ctx.font = '900 12px system-ui, sans-serif';
+    ctx.fillText('★', bx + barW * 0.5, by + barH * 0.53);
+
+    // Cursor oscilando
+    const cx = bx + this.timingCursor * barW;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#09152b';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(cx - 5, by - 4, 10, barH + 8, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  private drawParadinhaPrompt(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const cx = m.w * 0.5;
+    const cy = m.h * 0.62;
+    ctx.save();
+    ctx.fillStyle = 'rgba(9, 21, 44, 0.85)';
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(cx - 105, cy - 16, 210, 32, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#e0f2fe';
+    ctx.font = '900 11.5px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⚡ TOQUE P/ PARADINHA!', cx, cy + 0.5);
+    ctx.restore();
+  }
+
+  private drawParadinhaPopup(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const alpha = clamp(this.paradinhaBannerTimer / 0.4, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = '900 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#38bdf8';
+    ctx.strokeStyle = '#09152b';
+    ctx.lineWidth = 5;
+    const text = '⚡ PARADINHA!';
+    ctx.strokeText(text, m.w * 0.5, m.h * 0.58);
+    ctx.fillText(text, m.w * 0.5, m.h * 0.58);
+    ctx.restore();
+  }
+
+  private drawDefendPrompt(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const cx = m.w * 0.5;
+    const cy = m.h * 0.61;
+    ctx.save();
+    ctx.fillStyle = 'rgba(7, 21, 46, 0.9)';
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(cx - 134, cy - 24, 268, 48, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '900 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`🧤 DEFENDA ${this.getActiveCpuName().toUpperCase()}!`, cx, cy - 7);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '700 11px system-ui, sans-serif';
+    ctx.fillText('Toque no canto onde quer mergulhar', cx, cy + 10);
+    ctx.restore();
+  }
+
+  private drawPedroCar95(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const x = this.pedroCarX;
+    const y = m.goalBottom + 16;
+
+    ctx.save();
+    ctx.translate(x, y);
+
+    // Sombra
+    ctx.fillStyle = 'rgba(0,0,0,0.34)';
+    ctx.beginPath();
+    ctx.ellipse(0, 13, 38, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Carroceria vermelha #95 estilizada
+    ctx.fillStyle = '#e11d48';
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-36, 8);
+    ctx.lineTo(-34, -4);
+    ctx.lineTo(-16, -16);
+    ctx.lineTo(12, -16);
+    ctx.lineTo(34, -3);
+    ctx.lineTo(38, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Aerofólio
+    ctx.fillStyle = '#be123c';
+    ctx.beginPath();
+    ctx.roundRect(-40, -14, 10, 6, 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Para-brisa com olhos cartoon
+    ctx.fillStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.moveTo(-12, -13);
+    ctx.lineTo(10, -13);
+    ctx.lineTo(18, -4);
+    ctx.lineTo(-14, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#0ea5e9';
+    ctx.beginPath();
+    ctx.arc(0, -8.5, 2.6, 0, Math.PI * 2);
+    ctx.arc(9, -8.5, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Raio amarelo + número 95
+    ctx.fillStyle = '#facc15';
+    ctx.font = '900 12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('95', -2, 3);
+
+    // Rodas
+    [-20, 20].forEach((wx) => {
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(wx, 9, 8.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(wx, 9, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    ctx.restore();
+  }
+
+  private drawRobinComicBurst(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
+    const enter = clamp(1 - (this.robinComicTimer > 0.95 ? (this.robinComicTimer - 0.95) / 0.25 : 0), 0.05, 1);
+    const scale = easeOutBack(enter);
+    const cx = m.w * 0.5;
+    const cy = m.goalTop + m.goalH * 0.32;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-0.1);
+    ctx.scale(scale, scale);
+
+    // Estrela explosiva HQ
+    const spikes = 12;
+    ctx.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const ang = (i * Math.PI) / spikes;
+      const r = i % 2 === 0 ? 74 : 46;
+      const px = Math.cos(ang) * r;
+      const py = Math.sin(ang) * r * 0.62;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#facc15';
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 4;
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#dc2626';
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 4;
+    ctx.font = '900 30px Impact, Arial Black, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeText(this.robinComicWord, 0, 2);
+    ctx.fillText(this.robinComicWord, 0, 2);
 
     ctx.restore();
   }
@@ -875,11 +1878,9 @@ export class PenaltyGame {
     ctx.fillStyle = skyGrad;
     ctx.fillRect(0, 0, m.w, m.horizonY + 10);
 
-    // Refletores do estádio
     const towers = [m.w * 0.14, m.w * 0.86];
     towers.forEach((tx, idx) => {
       const ty = m.h * 0.095;
-      // Cone de luz suave
       const beam = ctx.createRadialGradient(tx, ty, 6, tx, ty + m.h * 0.14, m.w * 0.55);
       beam.addColorStop(0, 'rgba(255, 252, 230, 0.26)');
       beam.addColorStop(0.4, 'rgba(186, 224, 255, 0.08)');
@@ -892,7 +1893,6 @@ export class PenaltyGame {
       ctx.closePath();
       ctx.fill();
 
-      // Cabeça do refletor
       ctx.fillStyle = '#fffde7';
       ctx.shadowColor = '#fde68a';
       ctx.shadowBlur = 16;
@@ -908,14 +1908,12 @@ export class PenaltyGame {
     const standBottom = m.horizonY;
     const standH = standBottom - standTop;
 
-    // Estrutura da arquibancada
     const standGrad = ctx.createLinearGradient(0, standTop, 0, standBottom);
     standGrad.addColorStop(0, '#0a162d');
     standGrad.addColorStop(1, '#122547');
     ctx.fillStyle = standGrad;
     ctx.fillRect(0, standTop, m.w, standH);
 
-    // Degraus sutis
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
     ctx.lineWidth = 1;
     for (let r = 1; r <= 4; r++) {
@@ -926,9 +1924,9 @@ export class PenaltyGame {
       ctx.stroke();
     }
 
-    // Torcida animada
-    const jumpAmp = 2 + this.crowdExcitement * 9;
-    const jumpFreq = 4 + this.crowdExcitement * 12;
+    const fireBoost = this.isOnFire ? 0.35 : 0;
+    const jumpAmp = 2 + (this.crowdExcitement + fireBoost) * 9;
+    const jumpFreq = 4 + (this.crowdExcitement + fireBoost) * 12;
 
     for (const fan of this.crowd) {
       const fx = fan.nx * m.w;
@@ -936,14 +1934,12 @@ export class PenaltyGame {
       const bounce = Math.abs(Math.sin(this.elapsed * jumpFreq + fan.phase)) * jumpAmp;
       const fy = baseY - bounce;
 
-      // Corpo / Camisa
       ctx.fillStyle = fan.color;
       ctx.globalAlpha = 0.68 + fan.row * 0.08;
       ctx.beginPath();
       ctx.roundRect(fx - 4.5, fy, 9, 10, 3);
       ctx.fill();
 
-      // Cabeça
       ctx.fillStyle = '#e2c2a2';
       ctx.beginPath();
       ctx.arc(fx, fy - 3.2, 3.1, 0, Math.PI * 2);
@@ -951,13 +1947,11 @@ export class PenaltyGame {
     }
     ctx.globalAlpha = 1;
 
-    // Placa de publicidade / faixa NMFC na beira do campo
     const boardH = 16;
     const boardY = standBottom - boardH;
     ctx.fillStyle = '#0f2d6b';
     ctx.fillRect(0, boardY, m.w, boardH);
 
-    // Listras vermelhas esportivas na placa
     ctx.fillStyle = '#d92638';
     for (let x = -20; x < m.w + 20; x += 64) {
       ctx.fillRect(x, boardY, 18, boardH);
@@ -967,7 +1961,9 @@ export class PenaltyGame {
     ctx.font = '900 9px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const labels = ['NMFC', '•', 'PÊNALTIS', '•', 'NMFC', '•', 'PÊNALTIS'];
+    const labels = this.mode === 'copa'
+      ? ['COPA NMFC', '•', 'PÊNALTIS', '•', 'COPA NMFC', '•', 'PÊNALTIS']
+      : ['NMFC', '•', 'PÊNALTIS', '•', 'NMFC', '•', 'PÊNALTIS'];
     labels.forEach((txt, i) => {
       ctx.fillText(txt, ((i + 0.5) / labels.length) * m.w, boardY + boardH * 0.54);
     });
@@ -976,7 +1972,6 @@ export class PenaltyGame {
   private drawPitch(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
     const pitchH = m.h - m.horizonY;
 
-    // Gradiente base do gramado
     const grassGrad = ctx.createLinearGradient(0, m.horizonY, 0, m.h);
     grassGrad.addColorStop(0, '#146e34');
     grassGrad.addColorStop(0.35, '#198740');
@@ -984,7 +1979,6 @@ export class PenaltyGame {
     ctx.fillStyle = grassGrad;
     ctx.fillRect(0, m.horizonY, m.w, pitchH);
 
-    // Faixas horizontais alternadas de grama em perspectiva
     const bands = 7;
     for (let i = 0; i < bands; i++) {
       if (i % 2 === 0) continue;
@@ -996,17 +1990,14 @@ export class PenaltyGame {
       ctx.fillRect(0, y0, m.w, y1 - y0);
     }
 
-    // Linhas brancas do campo
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
     ctx.lineWidth = 3;
 
-    // Linha de fundo (linha do gol)
     ctx.beginPath();
     ctx.moveTo(0, m.goalBottom);
     ctx.lineTo(m.w, m.goalBottom);
     ctx.stroke();
 
-    // Pequena área (perspectiva)
     const boxTopHalf = m.goalW * 0.62;
     const boxBotHalf = m.goalW * 0.88;
     const boxBotY = m.goalBottom + pitchH * 0.24;
@@ -1017,18 +2008,9 @@ export class PenaltyGame {
     ctx.lineTo(m.w * 0.5 + boxTopHalf, m.goalBottom);
     ctx.stroke();
 
-    // Marca da cal (ponto de pênalti)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
     ctx.beginPath();
-    ctx.ellipse(
-      m.ballStart.x,
-      m.ballStart.y + m.ballRadius * 0.58,
-      11,
-      5,
-      0,
-      0,
-      Math.PI * 2
-    );
+    ctx.ellipse(m.ballStart.x, m.ballStart.y + m.ballRadius * 0.58, 11, 5, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1041,11 +2023,9 @@ export class PenaltyGame {
     const backTop = m.goalTop + depthY;
     const backBottom = m.goalBottom - depthY * 0.35;
 
-    // Fundo escurecido dentro do gol para destaque
     ctx.fillStyle = 'rgba(4, 14, 30, 0.42)';
     ctx.fillRect(m.goalLeft, m.goalTop, m.goalW, m.goalH);
 
-    // Malha da rede com deformação elástica quando sai gol
     ctx.strokeStyle = 'rgba(235, 245, 255, 0.34)';
     ctx.lineWidth = 1.15;
 
@@ -1067,7 +2047,6 @@ export class PenaltyGame {
       };
     };
 
-    // Linhas verticais da rede
     for (let c = 0; c <= cols; c++) {
       const u = c / cols;
       const topX = lerp(m.goalLeft, m.goalRight, u);
@@ -1084,7 +2063,6 @@ export class PenaltyGame {
       ctx.stroke();
     }
 
-    // Linhas horizontais da rede
     for (let r = 0; r <= rows; r++) {
       const v = r / rows;
       const py = lerp(m.goalTop, backBottom, v);
@@ -1101,7 +2079,6 @@ export class PenaltyGame {
       ctx.stroke();
     }
 
-    // Hastes traseiras de suporte
     ctx.strokeStyle = 'rgba(200, 215, 235, 0.45)';
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -1123,7 +2100,6 @@ export class PenaltyGame {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    // Sombra suave da trave
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
     ctx.lineWidth = postWidth + 4;
     ctx.beginPath();
@@ -1133,7 +2109,6 @@ export class PenaltyGame {
     ctx.lineTo(m.goalRight, m.goalBottom + 2);
     ctx.stroke();
 
-    // Trave branca brilhante
     ctx.strokeStyle = '#f8fafc';
     ctx.lineWidth = postWidth;
     ctx.beginPath();
@@ -1147,45 +2122,67 @@ export class PenaltyGame {
   }
 
   private drawTargets(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
-    const pulse = 1 + Math.sin(this.elapsed * 4.5) * 0.08;
+    const pulse = 1 + Math.sin(this.elapsed * 4.8) * 0.08;
+    const isDefending = this.phase === 'DEFEND_READY';
+    const isTiming = this.phase === 'TIMING';
 
     for (const id of TARGET_IDS) {
+      if (isTiming && id !== this.playerTarget) continue;
+
       const pt = m.targets[id];
-      const isActive = this.hoveredTarget === id;
-      const r = m.targetRadius * (isActive ? 1.18 : pulse);
+      const isBonus = !isDefending && this.bonusTarget === id;
+      const isActive = isTiming ? id === this.playerTarget : this.hoveredTarget === id;
+      const r = m.targetRadius * (isActive ? 1.18 : isBonus ? 1.08 * pulse : pulse);
 
       ctx.save();
 
-      // Preenchimento translúcido
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = isActive
-        ? 'rgba(250, 204, 21, 0.34)'
-        : 'rgba(255, 255, 255, 0.12)';
+      if (isDefending) {
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+      } else if (isActive || isBonus) {
+        ctx.fillStyle = 'rgba(250, 204, 21, 0.32)';
+      } else {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      }
       ctx.fill();
 
-      // Anel tracejado/sólido
-      ctx.lineWidth = isActive ? 3 : 2;
-      ctx.strokeStyle = isActive ? '#facc15' : 'rgba(255, 255, 255, 0.65)';
-      if (!isActive) {
+      ctx.lineWidth = isActive || isBonus ? 3 : 2;
+      ctx.strokeStyle = isDefending
+        ? '#38bdf8'
+        : isActive || isBonus
+          ? '#facc15'
+          : 'rgba(255, 255, 255, 0.65)';
+      if (!isActive && !isBonus) {
         ctx.setLineDash([6, 4]);
       }
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Mira central
-      ctx.fillStyle = isActive ? '#facc15' : 'rgba(255, 255, 255, 0.85)';
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, isActive ? 5 : 3.2, 0, Math.PI * 2);
-      ctx.fill();
+      if (isDefending) {
+        ctx.font = '15px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🧤', pt.x, pt.y + 1);
+      } else if (isBonus) {
+        ctx.fillStyle = '#fef08a';
+        ctx.font = '900 13px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('★+2', pt.x, pt.y + 1);
+      } else {
+        ctx.fillStyle = isActive ? '#facc15' : 'rgba(255, 255, 255, 0.85)';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isActive ? 5 : 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-      // Rótulo pequeno quando mirado
-      if (isActive) {
+      if (isActive && !isDefending) {
         ctx.font = '800 9.5px system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#09152b';
-        const pillW = 60;
+        const pillW = 62;
         const pillH = 16;
         ctx.beginPath();
         ctx.roundRect(pt.x - pillW * 0.5, pt.y + r + 4, pillW, pillH, 8);
@@ -1211,12 +2208,21 @@ export class PenaltyGame {
     let diveSpeedAlpha = 0;
     let diveDirX = 0;
 
-    // Ângulos dos braços articulados (0 = direita, PI/2 = baixo, PI = esquerda, -PI/2 = cima)
-    // Pose padrão ANTES da cobrança: postura ativa de defesa (braços abertos e mãos prontas, nunca na cintura)
-    const isRunningUp = this.phase === 'RUNNING_UP';
-    const readyFreq = isRunningUp ? 10.5 : 4.2;
+    const isWaitingPhase =
+      this.phase === 'READY' ||
+      this.phase === 'TIMING' ||
+      this.phase === 'DEFEND_READY' ||
+      this.phase === 'DEFEND_RUNUP' ||
+      (this.phase === 'RUNNING_UP' && this.keeperProgress === 0);
+
+    const isAlert =
+      this.phase === 'TIMING' ||
+      this.phase === 'RUNNING_UP' ||
+      this.phase === 'DEFEND_RUNUP';
+
+    const readyFreq = isAlert ? 10.5 : 4.2;
     const readyWave = Math.sin(this.elapsed * readyFreq);
-    const armBreath = Math.sin(this.elapsed * (isRunningUp ? 12 : 5.2));
+    const armBreath = Math.sin(this.elapsed * (isAlert ? 12 : 5.2));
 
     let leftUpperAng = 2.32 + armBreath * 0.06;
     let leftForeAng = 2.94 + armBreath * 0.1;
@@ -1224,19 +2230,17 @@ export class PenaltyGame {
     let rightForeAng = 0.2 - armBreath * 0.1;
     let gloveStretch = 1;
 
-    if (this.phase === 'READY' || this.phase === 'RUNNING_UP') {
-      // Base baixa e atlética de goleiro pronto para defender
-      const lateralAmp = isRunningUp ? 4.5 : 7.5;
+    if (isWaitingPhase) {
+      const lateralAmp = isAlert ? 4.5 : 7.5;
       posX += readyWave * lateralAmp;
       const crouchBounce = Math.abs(Math.sin(this.elapsed * readyFreq * 1.35));
-      const baseCrouch = isRunningUp ? 0.9 : 0.94;
+      const baseCrouch = isAlert ? 0.9 : 0.94;
       scaleY = baseCrouch - crouchBounce * 0.035;
       scaleX = 1.04 + crouchBounce * 0.025;
       posY = baseY + (1 - scaleY) * gkHeight * 0.45 + crouchBounce * 2.5;
       tilt = readyWave * 0.035;
 
-      if (isRunningUp) {
-        // Abre mais os braços e ergue levemente as luvas enquanto o batedor corre
+      if (isAlert) {
         leftUpperAng = 2.55 + armBreath * 0.08;
         leftForeAng = 3.28 + armBreath * 0.1;
         rightUpperAng = 0.59 - armBreath * 0.08;
@@ -1250,9 +2254,7 @@ export class PenaltyGame {
       diveSpeedAlpha = Math.sin(p * Math.PI) * 0.65;
       gloveStretch = lerp(1, 1.14, armT);
 
-      // Alcance total do centro do goleiro até as pontas das luvas esticadas
       const reach = gkHeight * 0.56;
-
       let finalTilt = 0;
       let destX = baseX;
       let destY = baseY;
@@ -1263,7 +2265,6 @@ export class PenaltyGame {
           destX = targetPt.x - Math.sin(finalTilt) * reach;
           destY = targetPt.y + Math.cos(finalTilt) * reach;
           diveDirX = -1;
-          // Braços abrem pelo lado de fora até esticarem totalmente no ângulo
           leftUpperAng = lerp(2.55, 4.54, armT);
           leftForeAng = lerp(3.28, 4.58, armT);
           rightUpperAng = lerp(0.59, -1.46, armT);
@@ -1304,7 +2305,6 @@ export class PenaltyGame {
           destX = baseX;
           destY = targetPt.y + reach * 0.72;
           diveDirX = 0;
-          // Salta no meio esticando os dois braços para cima/frente fechando o gol
           leftUpperAng = lerp(2.55, 4.46, armT);
           leftForeAng = lerp(3.28, 4.62, armT);
           rightUpperAng = lerp(0.59, -1.32, armT);
@@ -1319,7 +2319,19 @@ export class PenaltyGame {
       scaleY = lerp(0.92, 1.07, p);
     }
 
-    // Sombra dinâmica no gramado
+    // Aura vermelha no Modo Paredão (5+ gols seguidos no modo Infinito)
+    if (this.isParedao) {
+      const aura = 0.25 + Math.sin(this.elapsed * 8) * 0.12;
+      const g = ctx.createRadialGradient(posX, posY, gkHeight * 0.1, posX, posY, gkHeight * 0.72);
+      g.addColorStop(0, `rgba(239, 68, 68, ${aura})`);
+      g.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(posX, posY, gkHeight * 0.72, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Sombra dinâmica
     ctx.save();
     const heightOffGround = Math.max(0, baseY - posY);
     const shadowAlpha = clamp(0.36 - heightOffGround * 0.0022, 0.16, 0.36);
@@ -1337,7 +2349,6 @@ export class PenaltyGame {
     ctx.fill();
     ctx.restore();
 
-    // Linhas de velocidade durante o salto/mergulho
     if (diveSpeedAlpha > 0.05 && diveDirX !== 0) {
       ctx.save();
       ctx.strokeStyle = `rgba(254, 240, 138, ${diveSpeedAlpha * 0.55})`;
@@ -1376,10 +2387,8 @@ export class PenaltyGame {
       const foreLen = gkHeight * 0.165;
       const thickness = gkHeight * 0.072;
 
-      // Corpo do goleiro (cabeça, tronco limpo sem mão na cintura, shorts e pernas de goleiro.jpg)
       ctx.drawImage(rig.body, bodyOriginX, bodyOriginY, drawW, gkHeight);
 
-      // Braços articulados com mangas amarelas + listras pretas + luvas de goleiro
       this.drawGoalkeeperArm(
         ctx,
         leftShX,
@@ -1405,7 +2414,6 @@ export class PenaltyGame {
         gloveStretch
       );
     } else {
-      // Fallback rápido enquanto goleiro.jpg carrega
       const u = m.goalH * 0.0115;
       ctx.fillStyle = '#facc15';
       ctx.beginPath();
@@ -1453,7 +2461,6 @@ export class PenaltyGame {
       ctx.translate(x1, y1);
       ctx.rotate(ang);
 
-      // Manga amarela combinando com o uniforme de goleiro.jpg
       const grad = ctx.createLinearGradient(0, -r, 0, r);
       grad.addColorStop(0, '#fff200');
       grad.addColorStop(0.65, '#facc15');
@@ -1467,7 +2474,6 @@ export class PenaltyGame {
       ctx.fill();
       ctx.stroke();
 
-      // Listras pretas esportivas da manga
       if (withStripes) {
         ctx.strokeStyle = '#18181b';
         ctx.lineWidth = Math.max(1.1, width * 0.11);
@@ -1482,13 +2488,9 @@ export class PenaltyGame {
       ctx.restore();
     };
 
-    // 1. Braço superior (ombro -> cotovelo)
     drawSleeveSegment(shX, shY, elbowX, elbowY, thickness, true);
-
-    // 2. Antebraço (cotovelo -> punho)
     drawSleeveSegment(elbowX, elbowY, wristX, wristY, thickness * 0.88, false);
 
-    // 3. Munhequeira preta + Luva de goleiro preto e amarelo (estilo goleiro.jpg)
     ctx.save();
     ctx.translate(wristX, wristY);
     ctx.rotate(foreAng);
@@ -1497,7 +2499,6 @@ export class PenaltyGame {
     const gw = thickness * 1.48;
     const gh = thickness * 1.18;
 
-    // Munhequeira / punho da luva
     ctx.fillStyle = '#1f2430';
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = Math.max(1.4, thickness * 0.15);
@@ -1506,28 +2507,32 @@ export class PenaltyGame {
     ctx.fill();
     ctx.stroke();
 
-    // Corpo principal da luva (palma preta + detalhe amarelo vibrante)
     ctx.fillStyle = '#1e2430';
     ctx.beginPath();
     ctx.roundRect(0, -gh * 0.52, gw * 0.86, gh * 1.04, gh * 0.44);
     ctx.fill();
     ctx.stroke();
 
-    // Polegar aberto para dentro/cima pronto para agarrar a bola
     const thumbDir = side === -1 ? -1 : 1;
     ctx.fillStyle = '#1e2430';
     ctx.beginPath();
-    ctx.ellipse(gw * 0.28, thumbDir * gh * 0.56, gw * 0.25, gh * 0.22, thumbDir * 0.45, 0, Math.PI * 2);
+    ctx.ellipse(
+      gw * 0.28,
+      thumbDir * gh * 0.56,
+      gw * 0.25,
+      gh * 0.22,
+      thumbDir * 0.45,
+      0,
+      Math.PI * 2
+    );
     ctx.fill();
     ctx.stroke();
 
-    // Detalhe amarelo no dorso da luva
     ctx.fillStyle = '#facc15';
     ctx.beginPath();
     ctx.roundRect(gw * 0.16, -gh * 0.3, gw * 0.48, gh * 0.6, gh * 0.24);
     ctx.fill();
 
-    // Linhas sutis dos dedos na ponta da luva
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = Math.max(1, thickness * 0.1);
     ctx.beginPath();
@@ -1542,17 +2547,27 @@ export class PenaltyGame {
 
   private drawBallTrail(ctx: CanvasRenderingContext2D): void {
     for (const tr of this.ballTrail) {
-      ctx.fillStyle = `rgba(255, 255, 255, ${tr.alpha * 0.6})`;
-      ctx.beginPath();
-      ctx.arc(tr.x, tr.y, tr.r, 0, Math.PI * 2);
-      ctx.fill();
+      if (tr.fire) {
+        const g = ctx.createRadialGradient(tr.x, tr.y, 1, tr.x, tr.y, tr.r * 1.45);
+        g.addColorStop(0, `rgba(254, 240, 138, ${tr.alpha})`);
+        g.addColorStop(0.55, `rgba(249, 115, 22, ${tr.alpha * 0.85})`);
+        g.addColorStop(1, 'rgba(239, 68, 68, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(tr.x, tr.y, tr.r * 1.45, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = `rgba(255, 255, 255, ${tr.alpha * 0.6})`;
+        ctx.beginPath();
+        ctx.arc(tr.x, tr.y, tr.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
   private drawBall(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
     const r = m.ballRadius * this.ballScale;
 
-    // Sombra da bola
     const lift = Math.max(0, this.ballShadowPos.y - (this.ballPos.y + r));
     const shadowScale = clamp(1 - lift / 180, 0.45, 1);
     ctx.fillStyle = `rgba(0, 0, 0, ${0.38 * shadowScale})`;
@@ -1571,7 +2586,6 @@ export class PenaltyGame {
     ctx.save();
     ctx.translate(this.ballPos.x, this.ballPos.y);
 
-    // Base esférica com gradiente de iluminação
     const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
     grad.addColorStop(0, '#ffffff');
     grad.addColorStop(0.72, '#e2e8f0');
@@ -1582,7 +2596,6 @@ export class PenaltyGame {
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.fill();
 
-    // Gomos pretos rotacionando dentro do clip circular
     ctx.save();
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
@@ -1610,7 +2623,6 @@ export class PenaltyGame {
     }
     ctx.restore();
 
-    // Contorno da bola
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = Math.max(1.5, r * 0.08);
     ctx.beginPath();
@@ -1641,7 +2653,6 @@ export class PenaltyGame {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Ponta da seta
     const angle = Math.atan2(end.y - midY, end.x - midX);
     ctx.fillStyle = '#facc15';
     ctx.translate(end.x, end.y);
@@ -1657,48 +2668,56 @@ export class PenaltyGame {
   }
 
   private drawKicker(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
-    const p = this.phase === 'READY' ? 0 : this.phase === 'RUNNING_UP' ? this.kickerProgress : 1;
+    const isIdle =
+      this.phase === 'READY' || this.phase === 'TIMING' || this.phase === 'DEFEND_READY';
+    const isRunning = this.phase === 'RUNNING_UP' || this.phase === 'DEFEND_RUNUP';
+    const isFlight = this.phase === 'BALL_FLIGHT' || this.phase === 'DEFEND_FLIGHT';
+    const isGoalAnim = this.phase === 'GOAL' || this.phase === 'DEFEND_CONCEDED';
+    const isSadAnim =
+      this.phase === 'SAVED' ||
+      this.phase === 'POST_MISS' ||
+      this.phase === 'DEFEND_SAVED';
 
-    // Corrida em leve arco (mais natural para batedor destro se aproximando da bola)
+    const p = isIdle ? 0 : isRunning ? this.kickerProgress : 1;
+
     const runMoveT = clamp(p / 0.86, 0, 1);
     const easeMove = easeOutCubic(runMoveT);
     const arcX = Math.sin(runMoveT * Math.PI) * -m.w * 0.035;
     const kx = lerp(m.kickerIdle.x, m.kickerKick.x, easeMove) + arcX;
     const ky = lerp(m.kickerIdle.y, m.kickerKick.y, easeMove);
 
-    // Perspectiva: encolhe sutilmente ao correr em direção à marca da cal
     const perspectiveScale = lerp(1.06, 0.95, easeMove);
     const drawH = m.kickerHeight * perspectiveScale;
 
-    // Parâmetros de articulação
     let bodyBounceY = 0;
     let bodyTilt = 0;
     let bodyScaleX = 1;
     let bodyScaleY = 1;
-
     let leftLegRot = 0;
     let leftLegScaleY = 1;
     let leftLegLiftY = 0;
-
     let rightLegRot = 0;
     let rightLegScaleY = 1;
     let rightLegLiftY = 0;
 
-    if (this.phase === 'READY') {
-      // Respiração e prontidão leve
+    if (isIdle) {
       const breath = Math.sin(this.elapsed * 3.4);
       bodyBounceY = breath * 2.2;
       bodyScaleY = 1 + breath * 0.012;
       bodyTilt = Math.sin(this.elapsed * 1.7) * 0.018;
-    } else if (this.phase === 'RUNNING_UP') {
-      if (p < 0.74) {
-        // FASE 1: CORRIDA COM PASSADAS ALTERNADAS
+    } else if (isRunning) {
+      if (this.paradinhaPause > 0) {
+        // Pose congelada estilosa da paradinha!
+        bodyTilt = -0.1;
+        bodyBounceY = 4;
+        rightLegScaleY = 0.72;
+        rightLegLiftY = -drawH * 0.06;
+        rightLegRot = -0.22;
+      } else if (p < 0.74) {
         const runT = p / 0.74;
-        const stride = runT * Math.PI * 3.5; // ~3.5 passadas bem marcadas
+        const stride = runT * Math.PI * 3.5;
         const leftWave = Math.sin(stride);
         const rightWave = Math.sin(stride + Math.PI);
-
-        // Quando wave > 0, a perna está dobrando para trás/subindo no ar
         const leftAir = Math.max(0, leftWave);
         const rightAir = Math.max(0, rightWave);
 
@@ -1714,57 +2733,38 @@ export class PenaltyGame {
         bodyTilt = Math.sin(stride) * 0.075 + 0.04;
         bodyScaleY = 0.98 + Math.abs(Math.sin(stride)) * 0.03;
       } else {
-        // FASE 2: WIND-UP (perna esquerda planta firme, perna direita arma o chute!)
         const wT = easeOutCubic((p - 0.74) / 0.26);
-
-        // Pé de apoio firme
         leftLegRot = lerp(0, 0.12, wT);
-        leftLegScaleY = 1;
-        leftLegLiftY = 0;
-
-        // Perna de chute puxa para trás dobrando o joelho
         rightLegScaleY = lerp(1, 0.62, wT);
         rightLegLiftY = -wT * drawH * 0.095;
         rightLegRot = lerp(0, -0.34, wT);
-
-        // Tronco abre e inclina para a esquerda para gerar força
         bodyTilt = lerp(0.04, -0.13, wT);
         bodyBounceY = lerp(-4, 3, wT);
         bodyScaleX = lerp(1, 0.96, wT);
       }
-    } else if (this.phase === 'BALL_FLIGHT') {
-      // FASE 3: CHICOTADA DO CHUTE + FOLLOW-THROUGH
+    } else if (isFlight) {
       const strikeDuration = 0.14;
       const settleDuration = 0.3;
-
       if (this.phaseTimer <= strikeDuration) {
         const sT = easeOutCubic(clamp(this.phaseTimer / strikeDuration, 0, 1));
         leftLegRot = lerp(0.12, 0.08, sT);
-
-        // Perna direita dispara para frente e cruza levemente na direção do chute
         rightLegScaleY = lerp(0.62, 1.12, sT);
         rightLegLiftY = lerp(-drawH * 0.095, -drawH * 0.025, sT);
         rightLegRot = lerp(-0.34, 0.52, sT);
-
         bodyTilt = lerp(-0.13, -0.19, sT);
         bodyBounceY = lerp(3, -drawH * 0.03, sT);
         bodyScaleX = lerp(0.96, 1.03, sT);
       } else {
-        // Retorno suave ao apoio observando a bola
-        const fT = easeOutCubic(
-          clamp((this.phaseTimer - strikeDuration) / settleDuration, 0, 1)
-        );
+        const fT = easeOutCubic(clamp((this.phaseTimer - strikeDuration) / settleDuration, 0, 1));
         leftLegRot = lerp(0.08, 0, fT);
         rightLegScaleY = lerp(1.12, 1, fT);
         rightLegLiftY = lerp(-drawH * 0.025, 0, fT);
         rightLegRot = lerp(0.52, 0.04, fT);
-
         bodyTilt = lerp(-0.19, -0.02, fT);
         bodyBounceY = lerp(-drawH * 0.03, 0, fT);
         bodyScaleX = lerp(1.03, 1, fT);
       }
-    } else if (this.phase === 'GOAL') {
-      // Comemoração vibrante pulando!
+    } else if (isGoalAnim) {
       const jump = Math.abs(Math.sin(this.elapsed * 11));
       bodyBounceY = -jump * drawH * 0.11;
       bodyTilt = Math.sin(this.elapsed * 11) * 0.08;
@@ -1772,15 +2772,13 @@ export class PenaltyGame {
       rightLegRot = -jump * 0.18;
       leftLegScaleY = 1 - jump * 0.1;
       rightLegScaleY = 1 - jump * 0.1;
-    } else if (this.phase === 'SAVED') {
-      // Reação de desapontamento após defesa
+    } else if (isSadAnim) {
       const slump = clamp(this.phaseTimer / 0.35, 0, 1);
       bodyBounceY = slump * 5;
       bodyScaleY = 1 - slump * 0.05;
       bodyTilt = slump * 0.06;
     }
 
-    // Sombra no gramado
     const shadowScale = clamp(1 + bodyBounceY / (drawH * 0.45), 0.72, 1.08);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
     ctx.beginPath();
@@ -1795,14 +2793,14 @@ export class PenaltyGame {
     );
     ctx.fill();
 
-    // Efeito visual de arco do chute no instante do impacto
     if (this.kickSwooshTimer > 0) {
       this.drawKickSwoosh(ctx, m);
     }
 
-    const rig = this.sprites?.kickerRig ?? null;
+    const activeSprites = this.getActiveKickerSprites();
+    const rig = activeSprites?.kickerRig ?? null;
     if (!rig) {
-      const sprite = this.sprites?.back ?? null;
+      const sprite = activeSprites?.back ?? null;
       if (!sprite) return;
       const aspect = sprite.width / Math.max(1, sprite.height);
       const drawW = drawH * aspect;
@@ -1827,7 +2825,6 @@ export class PenaltyGame {
     ctx.save();
     ctx.translate(kx, ky + bodyBounceY);
 
-    // 1. Perna esquerda (atrás do calção)
     ctx.save();
     ctx.translate(leftHipLocalX, hipLocalY + leftLegLiftY);
     ctx.rotate(leftLegRot);
@@ -1841,7 +2838,6 @@ export class PenaltyGame {
     );
     ctx.restore();
 
-    // 2. Perna direita (perna do chute, atrás do calção)
     ctx.save();
     ctx.translate(rightHipLocalX, hipLocalY + rightLegLiftY);
     ctx.rotate(rightLegRot);
@@ -1855,7 +2851,6 @@ export class PenaltyGame {
     );
     ctx.restore();
 
-    // 3. Corpo superior (cabeça + tronco + camisa com nome/número + calção)
     ctx.save();
     ctx.translate(0, hipLocalY);
     ctx.rotate(bodyTilt);
@@ -1882,7 +2877,10 @@ export class PenaltyGame {
     const radius = m.ballRadius * (1.8 + t * 0.8);
 
     ctx.save();
-    ctx.strokeStyle = `rgba(254, 240, 138, ${alpha})`;
+    ctx.strokeStyle =
+      this.shotQuality === 'perfect'
+        ? `rgba(250, 204, 21, ${alpha})`
+        : `rgba(254, 240, 138, ${alpha})`;
     ctx.lineWidth = (1 - t) * 7 + 2;
     ctx.lineCap = 'round';
     ctx.beginPath();
@@ -1916,7 +2914,11 @@ export class PenaltyGame {
   }
 
   private drawBanner(ctx: CanvasRenderingContext2D, m: LayoutMetrics): void {
-    const enterT = clamp(1 - (this.bannerTimer > 1.0 ? (this.bannerTimer - 1.0) / 0.25 : 0), 0, 1);
+    const enterT = clamp(
+      1 - (this.bannerTimer > 1.0 ? (this.bannerTimer - 1.0) / 0.25 : 0),
+      0,
+      1
+    );
     const scale = easeOutBack(clamp(enterT, 0.01, 1));
 
     const cx = m.w * 0.5;
@@ -1926,10 +2928,9 @@ export class PenaltyGame {
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
 
-    // Fundo da placa
-    const boxW = Math.min(m.w * 0.78, 290);
+    const boxW = Math.min(m.w * 0.84, 310);
     const boxH = 74;
-    ctx.fillStyle = 'rgba(7, 17, 36, 0.88)';
+    ctx.fillStyle = 'rgba(7, 17, 36, 0.9)';
     ctx.strokeStyle = this.bannerColor;
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -1937,17 +2938,15 @@ export class PenaltyGame {
     ctx.fill();
     ctx.stroke();
 
-    // Título principal
     ctx.fillStyle = this.bannerColor;
-    ctx.font = '900 32px system-ui, sans-serif';
+    ctx.font = '900 26px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(this.bannerText, 0, -9);
+    ctx.fillText(this.bannerText, 0, -10);
 
-    // Subtítulo
     ctx.fillStyle = '#f8fafc';
-    ctx.font = '700 13px system-ui, sans-serif';
-    ctx.fillText(this.bannerSubtext, 0, 19);
+    ctx.font = '700 12.5px system-ui, sans-serif';
+    ctx.fillText(this.bannerSubtext, 0, 18);
 
     ctx.restore();
   }

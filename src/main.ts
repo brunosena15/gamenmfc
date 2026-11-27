@@ -1,21 +1,29 @@
 import './styles.css';
 import { soundEngine } from './audio';
 import { CHARACTERS, GOALKEEPER_IMAGE_URL, type CharacterDef } from './characters';
-import { PenaltyGame } from './game';
+import { PenaltyGame, type CopaSnapshot, type GameMode, type GameOverInfo } from './game';
 import {
   getCharacterSprites,
   getGoalkeeperSprites,
   type CharacterSprites,
 } from './spriteExtractor';
 import {
+  addLeaderboardEntry,
+  getCopaWins,
   getGoalsByCharacter,
   getHighScoreRecord,
+  getLeaderboard,
+  getPlayerNick,
   getUnlockedCharacterIds,
   incrementCharacterGoals,
+  incrementCopaWins,
   saveHighScoreRecord,
+  setPlayerNick,
   unlockCharacter,
   type HighScoreRecord,
 } from './storage';
+
+const GAME_SHARE_URL = 'https://brunosena15.github.io/gamenmfc/';
 
 const screenSelect = document.getElementById('screen-select') as HTMLElement;
 const screenGame = document.getElementById('screen-game') as HTMLElement;
@@ -23,29 +31,57 @@ const characterGrid = document.getElementById('character-grid') as HTMLElement;
 
 const selectHighScoreEl = document.getElementById('select-highscore') as HTMLElement;
 const selectHighScoreHolderEl = document.getElementById('select-highscore-holder') as HTMLElement;
+const btnModeInfinite = document.getElementById('btn-mode-infinite') as HTMLButtonElement;
+const btnModeCopa = document.getElementById('btn-mode-copa') as HTMLButtonElement;
 const btnStartGame = document.getElementById('btn-start-game') as HTMLButtonElement;
 const btnSoundSelect = document.getElementById('btn-sound-select') as HTMLButtonElement;
 const btnSoundGame = document.getElementById('btn-sound-game') as HTMLButtonElement;
 const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
 
+// Ranking modal
+const btnRanking = document.getElementById('btn-ranking') as HTMLButtonElement;
+const overlayRanking = document.getElementById('overlay-ranking') as HTMLElement;
+const btnCloseRanking = document.getElementById('btn-close-ranking') as HTMLButtonElement;
+const inputNick = document.getElementById('input-nick') as HTMLInputElement;
+const rankingCopaWinsEl = document.getElementById('ranking-copa-wins') as HTMLElement;
+const rankingListEl = document.getElementById('ranking-list') as HTMLOListElement;
+const rankingEmptyEl = document.getElementById('ranking-empty') as HTMLElement;
+
+// HUD
+const hudScoreboardInfinite = document.getElementById('hud-scoreboard-infinite') as HTMLElement;
+const hudScoreboardCopa = document.getElementById('hud-scoreboard-copa') as HTMLElement;
+const copaDotsPlayerEl = document.getElementById('copa-dots-player') as HTMLElement;
+const copaDotsCpuEl = document.getElementById('copa-dots-cpu') as HTMLElement;
+const copaScorePlayerEl = document.getElementById('copa-score-player') as HTMLElement;
+const copaScoreCpuEl = document.getElementById('copa-score-cpu') as HTMLElement;
+
 const hudScoreEl = document.getElementById('hud-score') as HTMLElement;
 const hudHighScoreEl = document.getElementById('hud-highscore') as HTMLElement;
 const hudHighScoreHolderEl = document.getElementById('hud-highscore-holder') as HTMLElement;
+const hudPlayerRoleEl = document.getElementById('hud-player-role') as HTMLElement;
 const hudPlayerNameEl = document.getElementById('hud-player-name') as HTMLElement;
 const hudAvatarCanvas = document.getElementById('hud-avatar-canvas') as HTMLCanvasElement;
+const badgeOnFire = document.getElementById('badge-onfire') as HTMLElement;
+const badgeShield = document.getElementById('badge-shield') as HTMLElement;
+const badgeParedao = document.getElementById('badge-paredao') as HTMLElement;
 const controlsHint = document.getElementById('controls-hint') as HTMLElement;
 const unlockToast = document.getElementById('unlock-toast') as HTMLElement;
 const unlockToastName = document.getElementById('unlock-toast-name') as HTMLElement;
 const gameCanvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 
+// Game Over
 const overlayGameOver = document.getElementById('overlay-gameover') as HTMLElement;
+const gameOverBadge = document.getElementById('gameover-badge') as HTMLElement;
 const gameOverTitle = document.getElementById('gameover-title') as HTMLElement;
 const gameOverSubtitle = document.getElementById('gameover-subtitle') as HTMLElement;
+const gameOverLeftLabel = document.getElementById('gameover-left-label') as HTMLElement;
+const gameOverRightLabel = document.getElementById('gameover-right-label') as HTMLElement;
 const gameOverScore = document.getElementById('gameover-score') as HTMLElement;
 const gameOverScorePlayer = document.getElementById('gameover-score-player') as HTMLElement;
 const gameOverHighScore = document.getElementById('gameover-highscore') as HTMLElement;
 const gameOverHighScoreHolder = document.getElementById('gameover-highscore-holder') as HTMLElement;
 const gameOverNewRecord = document.getElementById('gameover-new-record') as HTMLElement;
+const btnShareWhatsapp = document.getElementById('btn-share-whatsapp') as HTMLButtonElement;
 const btnRetry = document.getElementById('btn-retry') as HTMLButtonElement;
 const btnChangePlayer = document.getElementById('btn-change-player') as HTMLButtonElement;
 
@@ -56,13 +92,23 @@ const SAVE_MESSAGES = [
   'O goleiro leu seu movimento!',
 ];
 
+const CAUS_RESENHA_MESSAGES = [
+  'O goleiro já conhecia esse chute de cor, Caus!',
+  'Nem na gaveta entra com o Caus hoje! 😂',
+  'O goleiro leu até a alma do Caus!',
+  'Defesaça impossível! Tente outro batedor... 👀',
+];
+
+let selectedMode: GameMode = 'infinite';
 let selectedCharacter: CharacterDef | null = null;
 let highScoreRecord: HighScoreRecord = getHighScoreRecord();
 let goalsByCharacter: Record<string, number> = getGoalsByCharacter();
 let unlockedCharacterIds: Set<string> = getUnlockedCharacterIds();
 let unlockToastTimer: number | null = null;
+let lastShareText = '';
 
 const loadedSprites = new Map<string, CharacterSprites>();
+let goalkeeperSpritesCache: CharacterSprites | null = null;
 
 function isCharacterUnlocked(char: CharacterDef): boolean {
   if (!char.unlockRule) return true;
@@ -84,8 +130,8 @@ function showUnlockToast(char: CharacterDef): void {
   }, 3400);
 }
 
-function checkSecretUnlocks(scorerId: string): void {
-  const totalGoals = incrementCharacterGoals(scorerId);
+function checkSecretUnlocks(scorerId: string, goalsAdded: number): void {
+  const totalGoals = incrementCharacterGoals(scorerId, goalsAdded);
   goalsByCharacter[scorerId] = totalGoals;
 
   for (const char of CHARACTERS) {
@@ -104,25 +150,92 @@ function checkSecretUnlocks(scorerId: string): void {
   }
 }
 
+function syncCpuOpponents(): void {
+  const rivals = CHARACTERS.filter((c) => c.id !== selectedCharacter?.id).map((def) => ({
+    def,
+    sprites: loadedSprites.get(def.id) ?? null,
+  }));
+  game.setCpuOpponents(rivals);
+}
+
+function renderCopaBoard(copa: CopaSnapshot): void {
+  const totalSlots = Math.max(5, copa.playerResults.length, copa.cpuResults.length);
+
+  const renderDots = (container: HTMLElement, results: Array<'goal' | 'miss'>) => {
+    container.innerHTML = '';
+    for (let i = 0; i < totalSlots; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'copa-dot';
+      if (results[i] === 'goal') dot.classList.add('goal');
+      if (results[i] === 'miss') dot.classList.add('miss');
+      container.appendChild(dot);
+    }
+  };
+
+  renderDots(copaDotsPlayerEl, copa.playerResults);
+  renderDots(copaDotsCpuEl, copa.cpuResults);
+
+  const pGoals = copa.playerResults.filter((r) => r === 'goal').length;
+  const cGoals = copa.cpuResults.filter((r) => r === 'goal').length;
+  copaScorePlayerEl.textContent = String(pGoals);
+  copaScoreCpuEl.textContent = String(cGoals);
+
+  if (copa.turn === 'cpu') {
+    hudPlayerRoleEl.textContent = 'GOLEIRO (VOCÊ)';
+    hudPlayerNameEl.textContent = `VS ${copa.cpuName}`;
+    drawHudAvatar(goalkeeperSpritesCache);
+  } else if (selectedCharacter) {
+    hudPlayerRoleEl.textContent = copa.suddenDeath ? 'MORTE SÚBITA' : `COBRANÇA ${copa.round}`;
+    hudPlayerNameEl.textContent = selectedCharacter.name;
+    drawHudAvatar(loadedSprites.get(selectedCharacter.id) ?? null);
+  }
+}
+
 const game = new PenaltyGame(gameCanvas, {
-  onScoreChange: (score, isNewRecord) => {
+  onScoreChange: (score, goalsAdded, isNewRecord) => {
     hudScoreEl.textContent = String(score);
     triggerScoreBump(hudScoreEl);
 
     if (selectedCharacter) {
-      checkSecretUnlocks(selectedCharacter.id);
+      checkSecretUnlocks(selectedCharacter.id, goalsAdded);
     }
 
-    if (isNewRecord || score > highScoreRecord.score) {
+    if (selectedMode === 'infinite' && (isNewRecord || score > highScoreRecord.score)) {
       highScoreRecord = saveHighScoreRecord(score, selectedCharacter?.name ?? '');
       syncHighScoreUI();
       triggerScoreBump(hudHighScoreEl);
     }
   },
-  onGameOver: (finalScore, isNewRecord) => {
-    highScoreRecord = saveHighScoreRecord(finalScore, selectedCharacter?.name ?? '');
-    syncHighScoreUI();
-    showGameOver(finalScore, isNewRecord);
+  onHudStatusChange: (status) => {
+    badgeOnFire.hidden = !(status.mode === 'infinite' && status.onFire);
+    badgeShield.hidden = !(status.mode === 'infinite' && status.hasShield);
+    badgeParedao.hidden = !(status.mode === 'infinite' && status.paredao);
+
+    if (status.mode === 'copa' && status.copa) {
+      hudScoreboardInfinite.hidden = true;
+      hudScoreboardCopa.hidden = false;
+      renderCopaBoard(status.copa);
+    } else {
+      hudScoreboardInfinite.hidden = false;
+      hudScoreboardCopa.hidden = true;
+      if (selectedCharacter) {
+        hudPlayerRoleEl.textContent = 'BATEDOR';
+        hudPlayerNameEl.textContent = selectedCharacter.name;
+        drawHudAvatar(loadedSprites.get(selectedCharacter.id) ?? null);
+      }
+    }
+  },
+  onGameOver: (info) => {
+    if (info.mode === 'infinite') {
+      highScoreRecord = saveHighScoreRecord(info.finalScore, selectedCharacter?.name ?? '');
+      if (info.finalScore > 0 && selectedCharacter) {
+        addLeaderboardEntry(getPlayerNick(), selectedCharacter.name, info.finalScore);
+      }
+      syncHighScoreUI();
+    } else if (info.reason === 'copa-win') {
+      incrementCopaWins();
+    }
+    showGameOver(info);
   },
   onFirstKick: () => {
     controlsHint.classList.add('hidden');
@@ -254,13 +367,13 @@ function renderCharacterCards(): void {
     characterGrid.appendChild(card);
 
     if (!cached) {
-      // Extrai sprite frontal e de costas em background
       getCharacterSprites(char.imageUrl)
         .then((sprites) => {
           loadedSprites.set(char.id, sprites);
           if (spriteBox.isConnected) {
             attachSpritePreview(spriteBox, sprites);
           }
+          syncCpuOpponents();
 
           if (selectedCharacter?.id === char.id && screenGame.classList.contains('active')) {
             game.updateSprites(sprites);
@@ -280,6 +393,19 @@ function renderCharacterCards(): void {
   });
 }
 
+function updateStartButtonText(): void {
+  if (!selectedCharacter) {
+    btnStartGame.disabled = true;
+    btnStartGame.textContent = 'SELECIONE UM BATEDOR';
+    return;
+  }
+  btnStartGame.disabled = false;
+  btnStartGame.textContent =
+    selectedMode === 'copa'
+      ? `JOGAR COPA COM ${selectedCharacter.name.toUpperCase()}`
+      : `BATER COM ${selectedCharacter.name.toUpperCase()}`;
+}
+
 function selectCharacter(char: CharacterDef): void {
   if (!isCharacterUnlocked(char)) return;
   selectedCharacter = char;
@@ -290,12 +416,20 @@ function selectCharacter(char: CharacterDef): void {
     card.setAttribute('aria-checked', String(isSel));
   });
 
-  btnStartGame.disabled = false;
-  btnStartGame.textContent = `BATER COM ${char.name.toUpperCase()}`;
+  updateStartButtonText();
 
   if (char.goalSoundUrl) {
     soundEngine.preloadCustomSound(char.goalSoundUrl);
   }
+}
+
+function setMode(mode: GameMode): void {
+  selectedMode = mode;
+  btnModeInfinite.classList.toggle('active', mode === 'infinite');
+  btnModeInfinite.setAttribute('aria-selected', String(mode === 'infinite'));
+  btnModeCopa.classList.toggle('active', mode === 'copa');
+  btnModeCopa.setAttribute('aria-selected', String(mode === 'copa'));
+  updateStartButtonText();
 }
 
 function startGame(): void {
@@ -307,8 +441,10 @@ function startGame(): void {
   controlsHint.classList.remove('hidden');
 
   hudScoreEl.textContent = '0';
+  hudPlayerRoleEl.textContent = 'BATEDOR';
   hudPlayerNameEl.textContent = selectedCharacter.name;
   syncHighScoreUI();
+  syncCpuOpponents();
 
   screenSelect.classList.remove('active');
   screenGame.classList.add('active');
@@ -316,10 +452,9 @@ function startGame(): void {
   const sprites = loadedSprites.get(selectedCharacter.id) ?? null;
   drawHudAvatar(sprites);
 
-  // Garante início após layout visível
   requestAnimationFrame(() => {
     if (!selectedCharacter) return;
-    game.startSession(selectedCharacter, sprites, highScoreRecord.score);
+    game.startSession(selectedCharacter, sprites, highScoreRecord.score, selectedMode);
   });
 }
 
@@ -334,30 +469,176 @@ function showSelectScreen(): void {
   renderCharacterCards();
 }
 
-function showGameOver(finalScore: number, isNewRecord: boolean): void {
-  gameOverTitle.textContent =
-    finalScore === 0
-      ? 'Zero no Placar!'
-      : finalScore >= 5
-        ? 'Bela Sequência!'
-        : 'Fim de Sequência';
+function showGameOver(info: GameOverInfo): void {
+  const playerName = selectedCharacter?.name ?? 'Atleta';
+  gameOverBadge.classList.remove('badge-win');
 
-  const msg = SAVE_MESSAGES[Math.floor(Math.random() * SAVE_MESSAGES.length)];
-  gameOverSubtitle.textContent = msg;
-  gameOverScore.textContent = String(finalScore);
-  gameOverScorePlayer.textContent = selectedCharacter ? `com ${selectedCharacter.name}` : '';
-  gameOverHighScore.textContent = String(highScoreRecord.score);
-  if (highScoreRecord.score > 0 && highScoreRecord.playerName) {
-    gameOverHighScoreHolder.textContent = `com ${highScoreRecord.playerName}`;
+  if (info.mode === 'copa') {
+    const won = info.reason === 'copa-win';
+    const pGoals = info.copaPlayerGoals ?? 0;
+    const cGoals = info.copaCpuGoals ?? 0;
+
+    gameOverBadge.textContent = won ? '🏆 CAMPEÃO DA COPA!' : 'FIM DA COPA 5x5';
+    if (won) gameOverBadge.classList.add('badge-win');
+    gameOverTitle.textContent = won ? 'É CAMPEÃO!' : 'Eliminado nos Pênaltis!';
+    gameOverSubtitle.textContent = won
+      ? `${playerName} levantou a taça da Copa NMFC!`
+      : info.isCaus
+        ? CAUS_RESENHA_MESSAGES[Math.floor(Math.random() * CAUS_RESENHA_MESSAGES.length)]
+        : 'O PC levou a melhor dessa vez!';
+
+    gameOverLeftLabel.textContent = 'VOCÊ';
+    gameOverRightLabel.textContent = 'PC';
+    gameOverScore.textContent = String(pGoals);
+    gameOverScorePlayer.textContent = `com ${playerName}`;
+    gameOverHighScore.textContent = String(cGoals);
+    gameOverHighScoreHolder.textContent = 'Computador';
     gameOverHighScoreHolder.hidden = false;
+    gameOverNewRecord.hidden = !won;
+    gameOverNewRecord.textContent = `🏆 TÍTULOS NA COPA: ${getCopaWins()}`;
+
+    lastShareText = won
+      ? `🏆 Fui CAMPEÃO da Copa 5x5 (${pGoals}x${cGoals}) com ${playerName} no NMFC Pênaltis! Quero ver ganhar! ⚽🔥 ${GAME_SHARE_URL}`
+      : `⚽ Disputa tensa (${pGoals}x${cGoals}) na Copa 5x5 do NMFC Pênaltis com ${playerName}! Vem jogar: ${GAME_SHARE_URL}`;
   } else {
-    gameOverHighScoreHolder.hidden = true;
+    gameOverBadge.textContent =
+      info.reason === 'post' ? 'BOLA NA TRAVE!' : 'DEFESA DO GOLEIRO!';
+    gameOverTitle.textContent =
+      info.finalScore === 0
+        ? 'Zero no Placar!'
+        : info.finalScore >= 5
+          ? 'Bela Sequência!'
+          : 'Fim de Sequência';
+
+    if (info.isCaus) {
+      gameOverSubtitle.textContent =
+        CAUS_RESENHA_MESSAGES[Math.floor(Math.random() * CAUS_RESENHA_MESSAGES.length)];
+    } else if (info.reason === 'post') {
+      gameOverSubtitle.textContent = 'Explodiu na trave e saiu!';
+    } else {
+      gameOverSubtitle.textContent =
+        SAVE_MESSAGES[Math.floor(Math.random() * SAVE_MESSAGES.length)];
+    }
+
+    gameOverLeftLabel.textContent = 'GOLS SEGUIDOS';
+    gameOverRightLabel.textContent = 'RECORDE';
+    gameOverScore.textContent = String(info.finalScore);
+    gameOverScorePlayer.textContent = `com ${playerName}`;
+    gameOverHighScore.textContent = String(highScoreRecord.score);
+    if (highScoreRecord.score > 0 && highScoreRecord.playerName) {
+      gameOverHighScoreHolder.textContent = `com ${highScoreRecord.playerName}`;
+      gameOverHighScoreHolder.hidden = false;
+    } else {
+      gameOverHighScoreHolder.hidden = true;
+    }
+
+    gameOverNewRecord.textContent = '⭐ NOVO RECORDE PESSOAL!';
+    gameOverNewRecord.hidden = !(info.isNewRecord && info.finalScore > 0);
+
+    const holderNote =
+      highScoreRecord.score > 0 && highScoreRecord.playerName
+        ? ` (Recorde: ${highScoreRecord.score} com ${highScoreRecord.playerName})`
+        : '';
+    lastShareText = info.isCaus
+      ? `😂 Tentei bater pênalti com o Caus no NMFC Pênaltis e fiz ${info.finalScore} gols! Quero ver quem consegue marcar com ele! 🧤 ${GAME_SHARE_URL}`
+      : `⚽ Fiz ${info.finalScore} ${info.finalScore === 1 ? 'gol' : 'gols seguidos'} com ${playerName} no NMFC Pênaltis!${holderNote} Quero ver bater! 🏆🔥 ${GAME_SHARE_URL}`;
   }
-  gameOverNewRecord.hidden = !(isNewRecord && finalScore > 0);
+
   overlayGameOver.hidden = false;
 }
 
-// Eventos dos botões
+function renderRankingModal(): void {
+  inputNick.value = getPlayerNick();
+  rankingCopaWinsEl.textContent = String(getCopaWins());
+
+  const list = getLeaderboard();
+  rankingListEl.innerHTML = '';
+
+  if (list.length === 0) {
+    rankingEmptyEl.hidden = false;
+    return;
+  }
+
+  rankingEmptyEl.hidden = true;
+  const medals = ['🥇', '🥈', '🥉'];
+
+  list.forEach((item, idx) => {
+    const li = document.createElement('li');
+    li.className = 'ranking-item';
+    const pos = medals[idx] ?? `${idx + 1}º`;
+    li.innerHTML = `
+      <div class="ranking-item-left">
+        <span class="ranking-pos">${pos}</span>
+        <div class="ranking-meta">
+          <span class="ranking-nick"></span>
+          <span class="ranking-char"></span>
+        </div>
+      </div>
+      <strong class="ranking-score">${item.score} ⚽</strong>
+    `;
+    (li.querySelector('.ranking-nick') as HTMLElement).textContent = item.nick;
+    (li.querySelector('.ranking-char') as HTMLElement).textContent =
+      `com ${item.characterName} • ${item.date}`;
+    rankingListEl.appendChild(li);
+  });
+}
+
+async function shareOnWhatsapp(): Promise<void> {
+  soundEngine.playSelect();
+  const text = lastShareText || `⚽ Vem jogar NMFC Pênaltis! ${GAME_SHARE_URL}`;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'NMFC Pênaltis', text });
+      return;
+    } catch {
+      // Usuário cancelou ou fallback para WhatsApp URL
+    }
+  }
+
+  const waUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(waUrl, '_blank', 'noopener,noreferrer');
+}
+
+// Eventos
+btnModeInfinite.addEventListener('click', () => {
+  soundEngine.unlock();
+  soundEngine.playSelect();
+  setMode('infinite');
+});
+
+btnModeCopa.addEventListener('click', () => {
+  soundEngine.unlock();
+  soundEngine.playSelect();
+  setMode('copa');
+});
+
+btnRanking.addEventListener('click', () => {
+  soundEngine.unlock();
+  soundEngine.playSelect();
+  renderRankingModal();
+  overlayRanking.hidden = false;
+});
+
+btnCloseRanking.addEventListener('click', () => {
+  soundEngine.playSelect();
+  overlayRanking.hidden = true;
+});
+
+overlayRanking.addEventListener('click', (e) => {
+  if (e.target === overlayRanking) {
+    overlayRanking.hidden = true;
+  }
+});
+
+inputNick.addEventListener('change', () => {
+  inputNick.value = setPlayerNick(inputNick.value);
+});
+
+btnShareWhatsapp.addEventListener('click', () => {
+  void shareOnWhatsapp();
+});
+
 btnStartGame.addEventListener('click', startGame);
 btnBack.addEventListener('click', showSelectScreen);
 
@@ -383,18 +664,15 @@ renderCharacterCards();
 if (GOALKEEPER_IMAGE_URL) {
   getGoalkeeperSprites(GOALKEEPER_IMAGE_URL)
     .then((sprites) => {
+      goalkeeperSpritesCache = sprites;
       game.setGoalkeeperSprites(sprites);
     })
-    .catch(() => {
-      // Mantém fallback visual caso ocorra erro no carregamento
-    });
+    .catch(() => {});
 }
 
 // Registro do Service Worker para instalação PWA
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {
-      // Service Worker pode não registrar em contextos sem HTTPS/localhost
-    });
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
 }

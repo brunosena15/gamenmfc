@@ -105,6 +105,53 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn-sm {
+  width: 34px;
+  height: 34px;
+  font-size: 15px;
+}
+
+.mode-switch {
+  margin-top: 6px;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.mode-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.12s ease;
+}
+
+.mode-btn.active {
+  background: linear-gradient(135deg, #1d4ed8 0%, #e02437 100%);
+  color: #ffffff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+}
+
+.mode-btn:active {
+  transform: scale(0.96);
 }
 
 .badge-record {
@@ -594,11 +641,20 @@ body {
   background: rgba(255, 255, 255, 0.18);
 }
 
-.hud-player-pill {
+.hud-subrow {
   position: absolute;
   top: calc(64px + var(--safe-top));
   left: 12px;
+  right: 12px;
   z-index: 9;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.hud-player-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -609,6 +665,115 @@ body {
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   pointer-events: none;
+}
+
+.hud-status-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.status-pill {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.status-pill[hidden] {
+  display: none;
+}
+
+.pill-fire {
+  background: rgba(234, 88, 12, 0.85);
+  border: 1px solid #fde047;
+  color: #fffbeb;
+  box-shadow: 0 0 12px rgba(249, 115, 22, 0.6);
+}
+
+.pill-shield {
+  background: rgba(14, 116, 144, 0.86);
+  border: 1px solid #38bdf8;
+  color: #e0f2fe;
+}
+
+.pill-paredao {
+  background: rgba(185, 28, 28, 0.86);
+  border: 1px solid #fca5a5;
+  color: #fef2f2;
+}
+
+.copa-board {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: rgba(7, 18, 39, 0.84);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  min-width: 178px;
+}
+
+.copa-board[hidden],
+.scoreboard[hidden] {
+  display: none;
+}
+
+.copa-team-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.copa-team-label {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #fde047;
+  width: 34px;
+}
+
+.copa-team-cpu {
+  color: #93c5fd;
+}
+
+.copa-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.copa-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.copa-dot.goal {
+  background: #22c55e;
+  border-color: #bbf7d0;
+}
+
+.copa-dot.miss {
+  background: #ef4444;
+  border-color: #fecaca;
+}
+
+.copa-score-num {
+  font-size: 14px;
+  font-weight: 900;
+  width: 16px;
+  text-align: right;
 }
 
 #hud-avatar-canvas {
@@ -870,4 +1035,160 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+.btn-whatsapp {
+  width: 100%;
+  min-height: 46px;
+  border: 1.5px solid rgba(74, 222, 128, 0.55);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: #ffffff;
+  font-size: 13.5px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(22, 163, 74, 0.34);
+  transition: transform 0.12s ease, filter 0.15s ease;
+}
+
+.btn-whatsapp:active {
+  transform: scale(0.97);
+}
+
+.gameover-badge.badge-win {
+  background: rgba(34, 197, 94, 0.24);
+  border-color: rgba(74, 222, 128, 0.65);
+  color: #86efac;
+}
+
+/* ================= MODAL DE RANKING ================= */
+.ranking-card {
+  max-width: 360px;
+  max-height: 84dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+}
+
+.ranking-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ranking-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.nick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nick-label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.nick-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.nick-input:focus {
+  border-color: var(--nmfc-gold);
+}
+
+.copa-wins-pill {
+  padding: 7px 11px;
+  border-radius: 12px;
+  background: rgba(250, 204, 21, 0.1);
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  font-size: 12.5px;
+  color: #fde68a;
+  text-align: center;
+}
+
+.ranking-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 44dvh;
+}
+
+.ranking-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12.5px;
+}
+
+.ranking-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ranking-pos {
+  width: 22px;
+  text-align: center;
+  font-weight: 900;
+}
+
+.ranking-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ranking-nick {
+  font-weight: 900;
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-char {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.ranking-score {
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--nmfc-gold);
+  white-space: nowrap;
+}
+
+.ranking-empty {
+  margin: 8px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
 }

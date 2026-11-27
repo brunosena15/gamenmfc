@@ -32,15 +32,26 @@
               <strong id="select-highscore">0</strong>
               <span id="select-highscore-holder" class="record-holder" hidden></span>
             </div>
-            <button id="btn-sound-select" class="icon-btn" type="button" aria-label="Alternar som" title="Som">
-              🔊
-            </button>
+            <div class="header-actions">
+              <button id="btn-ranking" class="icon-btn" type="button" aria-label="Ver ranking" title="Ranking">
+                🏅
+              </button>
+              <button id="btn-sound-select" class="icon-btn" type="button" aria-label="Alternar som" title="Som">
+                🔊
+              </button>
+            </div>
           </div>
 
           <div class="brand-block">
-            <span class="brand-kicker">COBRANÇA DE PÊNALTIS</span>
             <h1 class="brand-title">NMFC <span>PENALTIS</span></h1>
-            <p class="brand-subtitle">Escolha seu batedor e faça o máximo de gols seguidos</p>
+            <div class="mode-switch" role="tablist" aria-label="Modo de jogo">
+              <button id="btn-mode-infinite" class="mode-btn active" type="button" role="tab" aria-selected="true">
+                🔥 INFINITO
+              </button>
+              <button id="btn-mode-copa" class="mode-btn" type="button" role="tab" aria-selected="false">
+                🏆 COPA 5x5
+              </button>
+            </div>
           </div>
         </header>
 
@@ -55,6 +66,32 @@
             SELECIONE UM BATEDOR
           </button>
         </footer>
+
+        <!-- MODAL DE RANKING TOP 10 -->
+        <div id="overlay-ranking" class="gameover-overlay" hidden>
+          <div class="gameover-card ranking-card">
+            <div class="ranking-header">
+              <h2 class="ranking-title">🏅 Ranking NMFC</h2>
+              <button id="btn-close-ranking" class="icon-btn icon-btn-sm" type="button" aria-label="Fechar ranking">
+                ✕
+              </button>
+            </div>
+
+            <div class="nick-row">
+              <label for="input-nick" class="nick-label">Seu nome:</label>
+              <input id="input-nick" class="nick-input" type="text" maxlength="18" placeholder="Seu apelido" />
+            </div>
+
+            <div class="copa-wins-pill">
+              🏆 Títulos na Copa 5x5: <strong id="ranking-copa-wins">0</strong>
+            </div>
+
+            <ol id="ranking-list" class="ranking-list"></ol>
+            <p id="ranking-empty" class="ranking-empty" hidden>
+              Nenhuma sequência registrada ainda. Bata uns pênaltis para entrar no Top 10!
+            </p>
+          </div>
+        </div>
       </section>
 
       <!-- TELA DE GAMEPLAY -->
@@ -64,7 +101,8 @@
             ←
           </button>
 
-          <div class="scoreboard" aria-live="polite">
+          <!-- Placar Modo Infinito -->
+          <div id="hud-scoreboard-infinite" class="scoreboard" aria-live="polite">
             <div class="score-item">
               <span class="score-label">GOLS</span>
               <strong id="hud-score" class="score-value">0</strong>
@@ -77,23 +115,45 @@
             </div>
           </div>
 
+          <!-- Placar Modo Copa 5x5 -->
+          <div id="hud-scoreboard-copa" class="copa-board" aria-live="polite" hidden>
+            <div class="copa-team-row">
+              <span class="copa-team-label">VOCÊ</span>
+              <div id="copa-dots-player" class="copa-dots"></div>
+              <strong id="copa-score-player" class="copa-score-num">0</strong>
+            </div>
+            <div class="copa-team-row">
+              <span class="copa-team-label copa-team-cpu">PC</span>
+              <div id="copa-dots-cpu" class="copa-dots"></div>
+              <strong id="copa-score-cpu" class="copa-score-num">0</strong>
+            </div>
+          </div>
+
           <button id="btn-sound-game" class="hud-btn" type="button" aria-label="Alternar som">
             🔊
           </button>
         </div>
 
-        <div class="hud-player-pill">
-          <canvas id="hud-avatar-canvas" width="44" height="44" aria-hidden="true"></canvas>
-          <div class="hud-player-meta">
-            <span class="hud-player-role">BATEDOR</span>
-            <strong id="hud-player-name">—</strong>
+        <div class="hud-subrow">
+          <div class="hud-player-pill">
+            <canvas id="hud-avatar-canvas" width="44" height="44" aria-hidden="true"></canvas>
+            <div class="hud-player-meta">
+              <span id="hud-player-role" class="hud-player-role">BATEDOR</span>
+              <strong id="hud-player-name">—</strong>
+            </div>
+          </div>
+
+          <div class="hud-status-badges">
+            <span id="badge-onfire" class="status-pill pill-fire" hidden>🔥 ON FIRE</span>
+            <span id="badge-shield" class="status-pill pill-shield" hidden>🛡️ ESCUDO</span>
+            <span id="badge-paredao" class="status-pill pill-paredao" hidden>🧱 PAREDÃO</span>
           </div>
         </div>
 
         <canvas id="game-canvas" class="game-canvas"></canvas>
 
         <div id="controls-hint" class="controls-hint">
-          <span>👆 Toque num alvo no gol ou deslize para chutar</span>
+          <span>👆 Escolha o canto, acerte a barra e toque na corrida p/ paradinha!</span>
         </div>
 
         <div id="unlock-toast" class="unlock-toast" hidden>
@@ -104,21 +164,21 @@
           </div>
         </div>
 
-        <!-- OVERLAY DE FIM DE JOGO (DEFESA) -->
+        <!-- OVERLAY DE FIM DE JOGO (DEFESA / FIM DA COPA) -->
         <div id="overlay-gameover" class="gameover-overlay" hidden>
           <div class="gameover-card">
-            <div class="gameover-badge">DEFESA DO GOLEIRO!</div>
+            <div id="gameover-badge" class="gameover-badge">DEFESA DO GOLEIRO!</div>
             <h2 id="gameover-title" class="gameover-title">Fim de Sequência</h2>
             <p id="gameover-subtitle" class="gameover-subtitle">O goleiro fechou o gol!</p>
 
             <div class="gameover-stats">
               <div class="stat-box">
-                <span class="stat-label">GOLS SEGUIDOS</span>
+                <span id="gameover-left-label" class="stat-label">GOLS SEGUIDOS</span>
                 <strong id="gameover-score" class="stat-number">0</strong>
                 <span id="gameover-score-player" class="stat-holder-player"></span>
               </div>
               <div class="stat-box stat-box-gold">
-                <span class="stat-label">RECORDE</span>
+                <span id="gameover-right-label" class="stat-label">RECORDE</span>
                 <strong id="gameover-highscore" class="stat-number">0</strong>
                 <span id="gameover-highscore-holder" class="stat-holder" hidden></span>
               </div>
@@ -129,6 +189,9 @@
             </div>
 
             <div class="gameover-actions">
+              <button id="btn-share-whatsapp" class="btn-whatsapp" type="button">
+                📲 COMPARTILHAR NO WHATSAPP
+              </button>
               <button id="btn-retry" class="btn-primary" type="button">
                 BATER NOVAMENTE
               </button>

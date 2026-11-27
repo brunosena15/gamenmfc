@@ -3,10 +3,20 @@ const HIGH_SCORE_HOLDER_KEY = 'nmfc_penaltis_highscore_holder';
 const SOUND_ENABLED_KEY = 'nmfc_penaltis_sound';
 const GOALS_BY_CHAR_KEY = 'nmfc_penaltis_goals_by_char';
 const UNLOCKED_CHARS_KEY = 'nmfc_penaltis_unlocked_chars';
+const PLAYER_NICK_KEY = 'nmfc_penaltis_player_nick';
+const LEADERBOARD_KEY = 'nmfc_penaltis_leaderboard';
+const COPA_WINS_KEY = 'nmfc_penaltis_copa_wins';
 
 export interface HighScoreRecord {
   score: number;
   playerName: string | null;
+}
+
+export interface LeaderboardEntry {
+  nick: string;
+  characterName: string;
+  score: number;
+  date: string;
 }
 
 export function getHighScoreRecord(): HighScoreRecord {
@@ -64,9 +74,9 @@ export function getGoalsByCharacter(): Record<string, number> {
   }
 }
 
-export function incrementCharacterGoals(characterId: string): number {
+export function incrementCharacterGoals(characterId: string, amount = 1): number {
   const totals = getGoalsByCharacter();
-  const next = (totals[characterId] ?? 0) + 1;
+  const next = (totals[characterId] ?? 0) + Math.max(1, Math.floor(amount));
   totals[characterId] = next;
   try {
     window.localStorage.setItem(GOALS_BY_CHAR_KEY, JSON.stringify(totals));
@@ -100,6 +110,95 @@ export function unlockCharacter(characterId: string): boolean {
     // noop
   }
   return true;
+}
+
+export function getPlayerNick(): string {
+  try {
+    return window.localStorage.getItem(PLAYER_NICK_KEY)?.trim() || 'Você';
+  } catch {
+    return 'Você';
+  }
+}
+
+export function setPlayerNick(nick: string): string {
+  const clean = nick.trim().slice(0, 18) || 'Você';
+  try {
+    window.localStorage.setItem(PLAYER_NICK_KEY, clean);
+  } catch {
+    // noop
+  }
+  return clean;
+}
+
+export function getLeaderboard(): LeaderboardEntry[] {
+  try {
+    const raw = window.localStorage.getItem(LEADERBOARD_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (e): e is LeaderboardEntry =>
+          typeof e === 'object' &&
+          e !== null &&
+          typeof e.nick === 'string' &&
+          typeof e.characterName === 'string' &&
+          typeof e.score === 'number' &&
+          e.score > 0
+      )
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
+export function addLeaderboardEntry(
+  nick: string,
+  characterName: string,
+  score: number
+): LeaderboardEntry[] {
+  const normalized = Math.floor(score);
+  const current = getLeaderboard();
+  if (normalized <= 0) return current;
+
+  const entry: LeaderboardEntry = {
+    nick: nick.trim().slice(0, 18) || 'Você',
+    characterName,
+    score: normalized,
+    date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+  };
+
+  const next = [...current, entry]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  try {
+    window.localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(next));
+  } catch {
+    // noop
+  }
+  return next;
+}
+
+export function getCopaWins(): number {
+  try {
+    const raw = window.localStorage.getItem(COPA_WINS_KEY);
+    const n = raw ? Number.parseInt(raw, 10) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function incrementCopaWins(): number {
+  const next = getCopaWins() + 1;
+  try {
+    window.localStorage.setItem(COPA_WINS_KEY, String(next));
+  } catch {
+    // noop
+  }
+  return next;
 }
 
 export function getSoundEnabled(): boolean {
