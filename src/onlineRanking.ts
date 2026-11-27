@@ -9,7 +9,7 @@ export interface OnlineRankingEntry {
   createdAt: string;
 }
 
-export type RealtimeStatus = 'unconfigured' | 'connecting' | 'live' | 'offline';
+export type RealtimeStatus = 'unconfigured' | 'connecting' | 'live' | 'online' | 'offline';
 
 interface RankingRow {
   id: number;
@@ -19,7 +19,7 @@ interface RankingRow {
   created_at: string;
 }
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim() ?? '';
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL?.trim() ?? '').replace(/\/+$/, '');
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ?? '';
 const TABLE_NAME = 'nmfc_ranking';
 
@@ -75,6 +75,7 @@ export async function fetchGlobalRanking(limit = 15): Promise<OnlineRankingEntry
     .limit(limit);
 
   if (error || !data) {
+    console.warn('[NMFC Ranking] Erro ao buscar ranking:', error);
     throw error ?? new Error('Falha ao buscar ranking online.');
   }
 
@@ -104,36 +105,64 @@ export async function submitGlobalScore(
     .single();
 
   if (error || !data) {
+    console.warn('[NMFC Ranking] Erro ao enviar placar:', error);
     throw error ?? new Error('Falha ao enviar pontuação online.');
   }
 
   return mapRow(data as RankingRow);
 }
 
+export interface GlobalRankingSubscription {
+  refresh: () => Promise<void>;
+  unsubscribe: () => void;
+}
+
 export function subscribeGlobalRanking(
   onUpdate: (entries: OnlineRankingEntry[]) => void,
   onStatusChange?: (status: RealtimeStatus) => void
-): () => void {
+): GlobalRankingSubscription {
   const sb = getClient();
   if (!sb) {
     onStatusChange?.('unconfigured');
-    return () => {};
+    return {
+      refresh: async () => {},
+      unsubscribe: () => {},
+    };
   }
+
+  let active = true;
+  let wsConnected = false;
+  let restHealthy = false;
+  let pollTimer: number | null = null;
+
+  const emitStatus = () => {
+    if (!active) return;
+    if (wsConnected) {
+      onStatusChange?.('live');
+    } else if (restHealthy) {
+      onStatusChange?.('online');
+    } else {
+      onStatusChange?.('offline');
+    }
+  };
 
   onStatusChange?.('connecting');
 
-  let active = true;
-  const refresh = () => {
-    fetchGlobalRanking(15)
-      .then((entries) => {
-        if (active) onUpdate(entries);
-      })
-      .catch(() => {
-        if (active) onStatusChange?.('offline');
-      });
+  const refresh = async (): Promise<void> => {
+    try {
+      const entries = await fetchGlobalRanking(15);
+      if (!active) return;
+      restHealthy = true;
+      onUpdate(entries);
+      emitStatus();
+    } catch {
+      if (!active) return;
+      restHealthy = false;
+      emitStatus();
+    }
   };
 
-  refresh();
+  void refresh();
 
   const channel: RealtimeChannel = sb
     .channel('nmfc-ranking-realtime')
@@ -145,20 +174,45 @@ export function subscribeGlobalRanking(
         table: TABLE_NAME,
       },
       () => {
-        refresh();
+        void refresh();
       }
     )
     .subscribe((status) => {
       if (!active) return;
       if (status === 'SUBSCRIBED') {
-        onStatusChange?.('live');
+        wsConnected = true;
+        emitStatus();
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        onStatusChange?.('offline');
+        // Se o WebSocket cair em redes móveis/iOS, não marca offline se o REST HTTPS estiver funcionando!
+        wsConnected = false;
+        void refresh();
       }
     });
 
-  return () => {
-    active = false;
-    void sb.removeChannel(channel);
+  // Fallback suave por polling a cada 15s caso o WebSocket não esteja ativo (ex: 4G restritivo)
+  pollTimer = window.setInterval(() => {
+    if (!active || document.hidden || wsConnected) return;
+    void refresh();
+  }, 15000);
+
+  const handleResume = () => {
+    if (!active || document.hidden) return;
+    void refresh();
+  };
+
+  window.addEventListener('online', handleResume);
+  document.addEventListener('visibilitychange', handleResume);
+
+  return {
+    refresh,
+    unsubscribe: () => {
+      active = false;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+      window.removeEventListener('online', handleResume);
+      document.removeEventListener('visibilitychange', handleResume);
+      void sb.removeChannel(channel);
+    },
   };
 }

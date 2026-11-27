@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nmfc-penaltis-v5';
+const CACHE_NAME = 'nmfc-penaltis-v6';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -23,6 +23,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
+
+  // Nunca intercepta requisições para APIs externas (ex: Supabase)
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     fetch(request)

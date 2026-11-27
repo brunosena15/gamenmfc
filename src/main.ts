@@ -6,6 +6,7 @@ import {
   isOnlineRankingConfigured,
   submitGlobalScore,
   subscribeGlobalRanking,
+  type GlobalRankingSubscription,
   type OnlineRankingEntry,
   type RealtimeStatus,
 } from './onlineRanking';
@@ -48,6 +49,7 @@ const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
 // Ranking modal
 const btnRanking = document.getElementById('btn-ranking') as HTMLButtonElement;
 const overlayRanking = document.getElementById('overlay-ranking') as HTMLElement;
+const btnRefreshRanking = document.getElementById('btn-refresh-ranking') as HTMLButtonElement;
 const btnCloseRanking = document.getElementById('btn-close-ranking') as HTMLButtonElement;
 const rankingLiveBadge = document.getElementById('ranking-live-badge') as HTMLElement;
 const tabRankingGlobal = document.getElementById('tab-ranking-global') as HTMLButtonElement;
@@ -121,7 +123,7 @@ let activeRankingTab: 'global' | 'local' = isOnlineRankingConfigured() ? 'global
 let globalRankingEntries: OnlineRankingEntry[] = [];
 let realtimeStatus: RealtimeStatus = isOnlineRankingConfigured() ? 'connecting' : 'unconfigured';
 let lastSubmittedOnlineId: number | null = null;
-let unsubscribeGlobalRanking: (() => void) | null = null;
+let globalRankingSub: GlobalRankingSubscription | null = null;
 
 const loadedSprites = new Map<string, CharacterSprites>();
 let goalkeeperSpritesCache: CharacterSprites | null = null;
@@ -580,6 +582,8 @@ function syncRealtimeBadge(): void {
   rankingLiveBadge.classList.remove('offline');
   if (realtimeStatus === 'live') {
     rankingLiveBadge.textContent = '🟢 AO VIVO';
+  } else if (realtimeStatus === 'online') {
+    rankingLiveBadge.textContent = '🟢 ONLINE';
   } else if (realtimeStatus === 'connecting') {
     rankingLiveBadge.textContent = '🟡 CONECTANDO...';
   } else if (realtimeStatus === 'unconfigured') {
@@ -608,6 +612,7 @@ async function sendScoreToGlobalRanking(
     const saved = await submitGlobalScore(nick, characterName, score);
     if (saved) {
       lastSubmittedOnlineId = saved.id;
+      await globalRankingSub?.refresh();
       const rankIdx = globalRankingEntries.findIndex((e) => e.id === saved.id);
       const posText = rankIdx >= 0 ? ` (#${rankIdx + 1} no Top 15!)` : '!';
       gameOverOnlineStatus.textContent = `🌍 Salvo no Ranking Global${posText}`;
@@ -646,8 +651,10 @@ function renderRankingModal(): void {
     if (globalRankingEntries.length === 0) {
       rankingEmptyEl.textContent =
         realtimeStatus === 'connecting'
-          ? 'Carregando placar global em tempo real...'
-          : 'Nenhum placar global ainda. Seja o 1º a inaugurar o Ranking NMFC!';
+          ? 'Carregando placar global...'
+          : realtimeStatus === 'offline'
+            ? 'Sem conexão com o servidor. Toque em ↻ para tentar novamente.'
+            : 'Nenhum placar global ainda. Seja o 1º a inaugurar o Ranking NMFC!';
       rankingEmptyEl.hidden = false;
       return;
     }
@@ -744,11 +751,26 @@ btnRanking.addEventListener('click', () => {
   soundEngine.playSelect();
   setRankingTab(activeRankingTab);
   overlayRanking.hidden = false;
+  if (activeRankingTab === 'global') {
+    void globalRankingSub?.refresh();
+  }
+});
+
+btnRefreshRanking.addEventListener('click', () => {
+  soundEngine.playSelect();
+  if (activeRankingTab === 'global' && isOnlineRankingConfigured()) {
+    realtimeStatus = 'connecting';
+    syncRealtimeBadge();
+    void globalRankingSub?.refresh();
+  } else {
+    renderRankingModal();
+  }
 });
 
 tabRankingGlobal.addEventListener('click', () => {
   soundEngine.playSelect();
   setRankingTab('global');
+  void globalRankingSub?.refresh();
 });
 
 tabRankingLocal.addEventListener('click', () => {
@@ -798,7 +820,7 @@ syncSoundButtons();
 renderCharacterCards();
 
 if (isOnlineRankingConfigured()) {
-  unsubscribeGlobalRanking = subscribeGlobalRanking(
+  globalRankingSub = subscribeGlobalRanking(
     (entries) => {
       globalRankingEntries = entries;
       if (!overlayRanking.hidden && activeRankingTab === 'global') {
@@ -819,7 +841,7 @@ if (isOnlineRankingConfigured()) {
     }
   );
   window.addEventListener('beforeunload', () => {
-    unsubscribeGlobalRanking?.();
+    globalRankingSub?.unsubscribe();
   });
 }
 
